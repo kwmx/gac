@@ -84,7 +84,7 @@ function getOSVersion() {
   }
   return "Unknown OS";
 }
-function buildSystemPrompt(mode) {
+function buildSystemPrompt(mode, config) {
   const osInfo = getOSVersion();
 
   if (mode === "suggest") {
@@ -105,7 +105,7 @@ Attempt to make it a single line response where possible. Prefer commands and co
 }
 
 async function runSinglePrompt(mode, prompt, config) {
-  const system = buildSystemPrompt(mode);
+  const system = buildSystemPrompt(mode, config);
   const messages = [];
   if (system) messages.push({ role: "system", content: system });
   messages.push({ role: "user", content: prompt });
@@ -190,7 +190,7 @@ async function runModels(config) {
     models = await listModels(config.baseUrl);
   } catch (err) {
     term(`Error: ${err.message}\n`);
-    return;
+    term.processExit(1);
   }
 
   if (!models.length) {
@@ -199,6 +199,8 @@ async function runModels(config) {
   }
 
   term("Available models:\n");
+  // Append 'Use default gpt4all model' option at the top
+  models.unshift("Use default gpt4all setting");
   models.forEach((model) => term(`- ${model}\n`));
   term("\nSelect a default model (use arrows + Enter, Esc to cancel):\n");
 
@@ -228,7 +230,11 @@ async function runModels(config) {
           term("Selection canceled.\n");
           term.processExit(0);
         }
-        const selected = models[response.selectedIndex];
+        let selected = models[response.selectedIndex];
+        // if user selected the default model option, set to 'gpt4all'
+        if (selected === "Use default gpt4all setting") {
+          selected = "gpt4all";
+        }
         setConfigValue("model", selected);
         config.model = selected;
         cleanup();
@@ -302,7 +308,7 @@ export async function runCli(argv) {
     const prompt = args.slice(1).join(" ").trim();
     if (!prompt) {
       term("Error: missing prompt after -a.\n");
-      return;
+      term.processExit(1);
     }
     await runSinglePrompt("ask", prompt, config);
     return;
@@ -312,7 +318,7 @@ export async function runCli(argv) {
     const prompt = args.slice(1).join(" ").trim();
     if (!prompt) {
       term(`Error: missing prompt after ${args[0]}.\n`);
-      return;
+      term.processExit(1);
     }
     await runSinglePrompt(args[0], prompt, config);
     return;
