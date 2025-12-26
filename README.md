@@ -7,14 +7,19 @@ Terminal client for GPT4All running on localhost. Supports streaming responses, 
 Requirements: Node.js 18+ and a running GPT4All OpenAI-compatible server.
 
 ```bash
+npm install -g @alhisan/gac
+```
+
+Or if you don't want to install globally
+
+```bash
 npm install
 node bin/gac.js --help
 ```
 
-Optional global command:
+Test if it works:
 
 ```bash
-npm link
 gac --help
 ```
 

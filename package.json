@@ -1,5 +1,5 @@
 {
-  "name": "gac",
+  "name": "@alhisan/gac",
   "version": "1.0.0",
   "description": "Terminal client for GPT4All running on localhost",
   "license": "GPL-3.0-only",
