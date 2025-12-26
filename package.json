@@ -1,0 +1,16 @@
+{
+  "name": "gac",
+  "version": "1.0.0",
+  "description": "Terminal client for GPT4All running on localhost",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "gac": "bin/gac.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "terminal-kit": "^3.1.0"
+  }
+}
