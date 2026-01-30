@@ -146,7 +146,7 @@ curl http://[SERVER_ADDRESS]:[SERVER_PORT]/v1/models
 For Ollama:
 
 ```bash
-curl http://localhost:11434/api/tags
+curl http://[SERVER_ADDRESS]:[SERVER_PORT]/api/tags
 ```
 
 ## License
