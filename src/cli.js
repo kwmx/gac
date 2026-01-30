@@ -196,6 +196,20 @@ async function selectConfigProvider(config) {
 async function runConfigTui(config) {
   term("Config editor (Esc to exit)\n\n");
   let updatedConfig = { ...config };
+  term.grabInput({ mouse: "button" });
+  const cleanup = () => {
+    term.grabInput(false);
+    term.removeListener("key", onKey);
+    term.hideCursor(false);
+  };
+  const onKey = (name) => {
+    if (name === "CTRL_C") {
+      cleanup();
+      term("\nCanceled.\n");
+      term.processExit(0);
+    }
+  };
+  term.on("key", onKey);
   const menuLoop = async () => {
     const menuItems = [
       `Provider: ${updatedConfig.provider === "ollama" ? "Ollama" : "OpenAI-compatible"}`,
@@ -227,6 +241,7 @@ async function runConfigTui(config) {
   while (true) {
     const selection = await menuLoop();
     if (selection === false) {
+      cleanup();
       term("Config editor closed.\n");
       break;
     }
@@ -338,6 +353,7 @@ async function runConfigTui(config) {
     }
 
     if (selection === 11) {
+      cleanup();
       term("Configuration saved.\n");
       break;
     }
