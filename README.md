@@ -136,9 +136,13 @@ Example:
 If you see connection errors, verify the server is reachable:
 
 ```bash
-curl http://localhost:4891/v1/models
+curl http://[SERVER_ADDRESS]:[SERVER_PORT]/v1/models
 ```
 
 ## License
 
 GNU General Public License v3.0. See `LICENSE`.
+
+## Disclaimer
+
+This was mostly vibe coded and I'm treating it as a fun side project / tool that is likely to remain improved and updated by agentic models.
