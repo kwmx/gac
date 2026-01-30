@@ -7,7 +7,7 @@ import process from "process";
 const { terminal: term } = terminalKit;
 
 function printHelp() {
-  term(`gac - GPT4All CLI\n\n`);
+  term(`gac - OpenAI-compatible & Ollama CLI\n\n`);
   term(`Options:\n`);
   term(`  -a                Single prompt mode (alias for ask)\n`);
   term(`  suggest           Suggestion mode\n`);
@@ -16,6 +16,7 @@ function printHelp() {
   term(`  chat              Interactive chat mode\n`);
   term(`  models            List models and set default\n`);
   term(`  config            View or edit configuration\n`);
+  term(`  config tui        Open interactive config editor\n`);
   term(`  --no-render      Disable markdown rendering\n`);
   term(`  --debug-render   Show both rendered and raw output\n`);
   term(
@@ -31,6 +32,7 @@ function printHelp() {
   term(`  gac chat\n`);
   term(`  gac models\n`);
   term(`  gac config\n`);
+  term(`  gac config tui\n`);
   term(`  gac config get <key>\n`);
   term(`  gac config set <key> <value>\n`);
   term(`  gac --no-render -a "Raw markdown output"\n`);
@@ -139,6 +141,209 @@ async function inputLine(label) {
   });
 }
 
+function formatConfigValue(value) {
+  if (typeof value === "string") {
+    if (!value) return "(empty)";
+    if (value.length > 48) return `${value.slice(0, 45)}...`;
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
+function maskApiKey(apiKey) {
+  if (!apiKey) return "(empty)";
+  if (apiKey.length <= 6) return "***";
+  return `${apiKey.slice(0, 3)}...${apiKey.slice(-3)}`;
+}
+
+async function promptConfigValue(label, currentValue) {
+  term(`${label} [${formatConfigValue(currentValue)}]: `);
+  return new Promise((resolve) => {
+    term.inputField({ cancelable: true, default: String(currentValue ?? "") }, (error, input) => {
+      term("\n");
+      if (error || input === undefined || input === null) {
+        resolve(null);
+        return;
+      }
+      resolve(input.trim());
+    });
+  });
+}
+
+async function selectConfigProvider(config) {
+  const options = [
+    "OpenAI-compatible (includes GPT4All)",
+    "Ollama",
+  ];
+  const currentIndex = config.provider === "ollama" ? 1 : 0;
+  term("\nSelect provider:\n");
+  return new Promise((resolve) => {
+    term.singleColumnMenu(
+      options,
+      { cancelable: true, selectedIndex: currentIndex },
+      (error, response) => {
+        term("\n");
+        if (error || !response || response.canceled) {
+          resolve(null);
+          return;
+        }
+        resolve(response.selectedIndex === 1 ? "ollama" : "openai");
+      }
+    );
+  });
+}
+
+async function runConfigTui(config) {
+  term("Config editor (Esc to exit)\n\n");
+  let updatedConfig = { ...config };
+  const menuLoop = async () => {
+    const menuItems = [
+      `Provider: ${updatedConfig.provider === "ollama" ? "Ollama" : "OpenAI-compatible"}`,
+      `Base URL (OpenAI): ${formatConfigValue(updatedConfig.baseUrl)}`,
+      `Base URL (Ollama): ${formatConfigValue(updatedConfig.ollamaBaseUrl)}`,
+      `API Key: ${maskApiKey(updatedConfig.apiKey)}`,
+      `Model: ${formatConfigValue(updatedConfig.model)}`,
+      `Temperature: ${formatConfigValue(updatedConfig.temperature)}`,
+      `Max Tokens: ${formatConfigValue(updatedConfig.maxTokens)}`,
+      `Stream: ${formatConfigValue(updatedConfig.stream)}`,
+      `Render Markdown: ${formatConfigValue(updatedConfig.renderMarkdown)}`,
+      `Debug Render: ${formatConfigValue(updatedConfig.debugRender)}`,
+      `Detailed Suggest: ${formatConfigValue(updatedConfig.detailedSuggest)}`,
+      "Save and exit",
+    ];
+
+    return new Promise((resolve) => {
+      term.singleColumnMenu(menuItems, { cancelable: true }, (error, response) => {
+        term("\n");
+        if (error || !response || response.canceled) {
+          resolve(false);
+          return;
+        }
+        resolve(response.selectedIndex);
+      });
+    });
+  };
+
+  while (true) {
+    const selection = await menuLoop();
+    if (selection === false) {
+      term("Config editor closed.\n");
+      break;
+    }
+
+    if (selection === 0) {
+      const provider = await selectConfigProvider(updatedConfig);
+      if (provider) {
+        setConfigValue("provider", provider);
+        updatedConfig.provider = provider;
+      }
+      continue;
+    }
+
+    if (selection === 1) {
+      const value = await promptConfigValue("OpenAI base URL", updatedConfig.baseUrl);
+      if (value !== null) {
+        setConfigValue("baseUrl", value);
+        updatedConfig.baseUrl = value;
+      }
+      continue;
+    }
+
+    if (selection === 2) {
+      const value = await promptConfigValue("Ollama base URL", updatedConfig.ollamaBaseUrl);
+      if (value !== null) {
+        setConfigValue("ollamaBaseUrl", value);
+        updatedConfig.ollamaBaseUrl = value;
+      }
+      continue;
+    }
+
+    if (selection === 3) {
+      term("API Key (leave empty to clear)\n");
+      const value = await promptConfigValue("API key", updatedConfig.apiKey);
+      if (value !== null) {
+        setConfigValue("apiKey", value);
+        updatedConfig.apiKey = value;
+      }
+      continue;
+    }
+
+    if (selection === 4) {
+      const value = await promptConfigValue("Model", updatedConfig.model);
+      if (value !== null) {
+        setConfigValue("model", value);
+        updatedConfig.model = value;
+      }
+      continue;
+    }
+
+    if (selection === 5) {
+      const value = await promptConfigValue("Temperature", updatedConfig.temperature);
+      if (value !== null) {
+        setConfigValue("temperature", value);
+        updatedConfig.temperature = value;
+      }
+      continue;
+    }
+
+    if (selection === 6) {
+      const value = await promptConfigValue("Max Tokens", updatedConfig.maxTokens);
+      if (value !== null) {
+        setConfigValue("maxTokens", value);
+        updatedConfig.maxTokens = value;
+      }
+      continue;
+    }
+
+    if (selection === 7) {
+      const value = await promptConfigValue("Stream (true/false)", updatedConfig.stream);
+      if (value !== null) {
+        setConfigValue("stream", value);
+        updatedConfig.stream = value;
+      }
+      continue;
+    }
+
+    if (selection === 8) {
+      const value = await promptConfigValue(
+        "Render Markdown (true/false)",
+        updatedConfig.renderMarkdown
+      );
+      if (value !== null) {
+        setConfigValue("renderMarkdown", value);
+        updatedConfig.renderMarkdown = value;
+      }
+      continue;
+    }
+
+    if (selection === 9) {
+      const value = await promptConfigValue("Debug Render (true/false)", updatedConfig.debugRender);
+      if (value !== null) {
+        setConfigValue("debugRender", value);
+        updatedConfig.debugRender = value;
+      }
+      continue;
+    }
+
+    if (selection === 10) {
+      const value = await promptConfigValue(
+        "Detailed Suggest (true/false)",
+        updatedConfig.detailedSuggest
+      );
+      if (value !== null) {
+        setConfigValue("detailedSuggest", value);
+        updatedConfig.detailedSuggest = value;
+      }
+      continue;
+    }
+
+    if (selection === 11) {
+      term("Configuration saved.\n");
+      break;
+    }
+  }
+}
+
 async function runChat(config) {
   term('Interactive chat. Type "exit" to quit.\n\n');
   const messages = [];
@@ -187,20 +392,20 @@ async function runChat(config) {
 async function runModels(config) {
   let models;
   try {
-    models = await listModels(config.baseUrl);
+    models = await listModels(config);
   } catch (err) {
     term(`Error: ${err.message}\n`);
     term.processExit(1);
   }
 
   if (!models.length) {
-    term("No models found from GPT4All server.\n");
+    term("No models found from the configured provider.\n");
     term.processExit(0);
   }
 
   term("Available models:\n");
-  // Append 'Use default gpt4all model' option at the top
-  models.unshift("Use default gpt4all setting");
+  // Append option to keep current default at the top
+  models.unshift("Keep current default");
   models.forEach((model) => term(`- ${model}\n`));
   term("\nSelect a default model (use arrows + Enter, Esc to cancel):\n");
 
@@ -231,9 +436,10 @@ async function runModels(config) {
           term.processExit(0);
         }
         let selected = models[response.selectedIndex];
-        // if user selected the default model option, set to 'gpt4all'
-        if (selected === "Use default gpt4all setting") {
-          selected = "gpt4all";
+        if (selected === "Keep current default") {
+          cleanup();
+          term(`Default model unchanged ("${config.model}").\n`);
+          term.processExit(0);
         }
         setConfigValue("model", selected);
         config.model = selected;
@@ -277,6 +483,10 @@ export async function runCli(argv) {
   }
 
   if (args[0] === "config") {
+    if (args[1] === "tui") {
+      await runConfigTui(config);
+      return;
+    }
     if (args[1] === "get" && args[2]) {
       const key = args[2];
       term(`${config[key]}\n`);

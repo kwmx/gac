@@ -3,7 +3,10 @@ import path from "path";
 import os from "os";
 
 const DEFAULT_CONFIG = {
+  provider: "openai",
   baseUrl: "http://localhost:4891",
+  ollamaBaseUrl: "http://localhost:11434",
+  apiKey: "",
   model: "gpt4all",
   temperature: 0.7,
   maxTokens: 512,

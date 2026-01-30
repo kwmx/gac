@@ -1,10 +1,10 @@
-# GPT4All CLI (gac)
+# GAC CLI (gac)
 
-Terminal client for GPT4All running on localhost. Supports streaming responses, interactive chat, and configurable markdown rendering using `terminal-kit`.
+Terminal client for OpenAI-compatible APIs (including GPT4All) and Ollama. Supports streaming responses, interactive chat, and configurable markdown rendering using `terminal-kit`.
 
 ## Installation
 
-Requirements: Node.js 18+ and a running GPT4All OpenAI-compatible server.
+Requirements: Node.js 18+ and a running OpenAI-compatible server (like GPT4All) or Ollama.
 
 ```bash
 npm install -g @alhisan/gac
@@ -68,6 +68,7 @@ View and edit:
 
 ```bash
 gac config
+gac config tui
 gac config get baseUrl
 gac config set baseUrl http://localhost:4891
 gac config set model "Llama 3 8B Instruct"
@@ -77,7 +78,10 @@ gac config set detailedSuggest true
 
 ### Core settings
 
+- `provider` (string): `openai` (default) or `ollama`
 - `baseUrl` (string): GPT4All server base, e.g. `http://localhost:4891`
+- `ollamaBaseUrl` (string): Ollama base, e.g. `http://localhost:11434`
+- `apiKey` (string): API key for OpenAI-compatible services (empty for local servers)
 - `model` (string): model ID from `/v1/models`
 - `temperature` (number)
 - `maxTokens` (number)
@@ -137,6 +141,12 @@ If you see connection errors, verify the server is reachable:
 
 ```bash
 curl http://[SERVER_ADDRESS]:[SERVER_PORT]/v1/models
+```
+
+For Ollama:
+
+```bash
+curl http://localhost:11434/api/tags
 ```
 
 ## License
