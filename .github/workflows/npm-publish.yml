@@ -2,7 +2,6 @@ name: Publish Package to npmjs
 
 on:
   release:
-    # This triggers when you click 'Publish Release' in the GitHub UI
     types: [published] 
 
 jobs:
@@ -19,7 +18,6 @@ jobs:
   publish-npm:
     needs: build
     runs-on: ubuntu-latest
-    # CRITICAL: These permissions are required for --provenance to work
     permissions:
       id-token: write
       contents: read
