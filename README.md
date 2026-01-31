@@ -29,6 +29,7 @@ Single prompt:
 
 ```bash
 gac -a "Hello gpt4all, how are you doing today?"
+gac "How do I push to GitHub?"
 gac suggest "How do I connect to ssh server on a custom port 5322?"
 gac explain "How do I use rsync?"
 gac suggest -d "Give me step-by-step instructions to set up an SSH server on port 5322"
@@ -86,6 +87,8 @@ gac config set detailedSuggest true
 - `temperature` (number)
 - `maxTokens` (number)
 - `stream` (boolean)
+- `requestTimeoutMs` (number): request timeout in milliseconds (0 to disable). Useful for larger models or slower servers.
+- `defaultAction` (string): default mode for direct prompts (`suggest`, `ask`, or `explain`).
 - `detailedSuggest` (boolean): when `true`, `suggest` mode returns more detailed, step-by-step suggestions.
 - `renderMarkdown` (boolean)
 

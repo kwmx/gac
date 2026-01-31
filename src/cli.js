@@ -2,6 +2,7 @@ import terminalKit from "terminal-kit";
 import { chatCompletion, listModels } from "./gpt4all.js";
 import { getConfigPath, loadConfig, setConfigValue } from "./config.js";
 import { createMarkdownRenderer } from "./markdown.js";
+import fs from "fs";
 import os from "os";
 import process from "process";
 const { terminal: term } = terminalKit;
@@ -39,6 +40,33 @@ function printHelp() {
   term(`  gac --debug-render -a "Show rendered and raw output"\n`);
   term(`\n`);
 }
+function parseOsRelease(contents) {
+  const result = {};
+  const lines = contents.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const [key, ...rest] = trimmed.split("=");
+    let value = rest.join("=").trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value.slice(1, -1);
+    }
+    if (value) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function readLinuxOsRelease() {
+  try {
+    const contents = fs.readFileSync("/etc/os-release", "utf8");
+    return parseOsRelease(contents);
+  } catch (err) {
+    return null;
+  }
+}
+
 function getOSVersion() {
   const platform = os.platform();
   if (platform === "win32") {
@@ -65,7 +93,14 @@ function getOSVersion() {
     return "macOS";
   }
   if (platform === "linux") {
-    // Find which distro
+    const osRelease = readLinuxOsRelease();
+    if (osRelease && (osRelease.PRETTY_NAME || osRelease.NAME)) {
+      const pretty = osRelease.PRETTY_NAME || osRelease.NAME;
+      const id = osRelease.ID ? `; id=${osRelease.ID}` : "";
+      const idLike = osRelease.ID_LIKE ? `; id_like=${osRelease.ID_LIKE}` : "";
+      return `Linux (${pretty}${id}${idLike})`;
+    }
+    // Find which distro (fallbacks)
     if (process.env.OS_RELEASE) {
       return `${platform}: ${process.env.OS_RELEASE}`;
     } else if (process.env.OS) {
@@ -88,22 +123,31 @@ function getOSVersion() {
 }
 function buildSystemPrompt(mode, config) {
   const osInfo = getOSVersion();
+  const osGuidance = `The user is using a system with the following OS: ${osInfo}. When providing commands or package install steps, use the native tooling for that OS (e.g., dnf for Fedora, apt for Debian/Ubuntu). Avoid giving instructions for other distros unless explicitly requested.`;
 
   if (mode === "suggest") {
     if (config.detailedSuggest === true) {
-      return `You are an expert technical assistant. The user is using a system with the following OS: ${osInfo}. When providing suggestions, give detailed, step-by-step instructions that the user can follow to achieve their goals. Include relevant commands, code snippets, or configurations as needed. Avoid unnecessary explanations or background information. Tailor your suggestions to be relevant to the user's operating system and environment.
+      return `You are an expert technical assistant. ${osGuidance} When providing suggestions, give detailed, step-by-step instructions that the user can follow to achieve their goals. Include relevant commands, code snippets, or configurations as needed. Avoid unnecessary explanations or background information. Tailor your suggestions to be relevant to the user's operating system and environment.
 Attempt to make it a single line response where possible. Prefer commands and code snippets over lengthy explanations. Always leave commands and codes in their own line for easy copying.`;
     } else {
-      return `You are an expert technical assistant. The user is using a system with the following OS: ${osInfo}. Provide concise and practical suggestions to help the user accomplish their tasks efficiently. Focus on clarity and brevity, ensuring that your suggestions are easy to understand and implement. Tailor your suggestions to be relevant to the user's operating system and environment. Avoid lengthy explanations or unnecessary details prefer single line commands or codes if you must include explainations make sure the commands and codes are in their own line for easy copying.`;
+      return `You are an expert technical assistant. ${osGuidance} Provide concise and practical suggestions to help the user accomplish their tasks efficiently. Focus on clarity and brevity, ensuring that your suggestions are easy to understand and implement. Tailor your suggestions to be relevant to the user's operating system and environment. Avoid lengthy explanations or unnecessary details prefer single line commands or codes if you must include explainations make sure the commands and codes are in their own line for easy copying.`;
     }
   }
   if (mode === "ask") {
-    return "Provide a helpful and accurate response to the user's question.";
+    return `Provide a helpful and accurate response to the user's question. ${osGuidance}`;
   }
   if (mode === "explain") {
-    return "Explain step-by-step with a short example if helpful.";
+    return `Explain step-by-step with a short example if helpful. ${osGuidance}`;
   }
   return null;
+}
+
+function normalizeDefaultAction(action) {
+  const normalized = String(action || "").trim().toLowerCase();
+  if (normalized === "ask" || normalized === "suggest" || normalized === "explain") {
+    return normalized;
+  }
+  return "suggest";
 }
 
 async function runSinglePrompt(mode, prompt, config) {
@@ -120,6 +164,11 @@ async function runSinglePrompt(mode, prompt, config) {
     } else {
       term(`${reply}\n`);
     }
+  }
+  if (!reply || !reply.trim()) {
+    term(
+      "No response from the model. The request may have timed out or returned empty content. Consider increasing requestTimeoutMs in the config or enabling streaming.\n"
+    );
   }
   if (config.debugRender) {
     term(`\n--- RAW ---\n${reply}\n`);
@@ -220,6 +269,8 @@ async function runConfigTui(config) {
       `Temperature: ${formatConfigValue(updatedConfig.temperature)}`,
       `Max Tokens: ${formatConfigValue(updatedConfig.maxTokens)}`,
       `Stream: ${formatConfigValue(updatedConfig.stream)}`,
+      `Request Timeout (ms): ${formatConfigValue(updatedConfig.requestTimeoutMs)}`,
+      `Default Action: ${formatConfigValue(updatedConfig.defaultAction)}`,
       `Render Markdown: ${formatConfigValue(updatedConfig.renderMarkdown)}`,
       `Debug Render: ${formatConfigValue(updatedConfig.debugRender)}`,
       `Detailed Suggest: ${formatConfigValue(updatedConfig.detailedSuggest)}`,
@@ -321,6 +372,30 @@ async function runConfigTui(config) {
 
     if (selection === 8) {
       const value = await promptConfigValue(
+        "Request timeout in ms (0 to disable)",
+        updatedConfig.requestTimeoutMs
+      );
+      if (value !== null) {
+        setConfigValue("requestTimeoutMs", value);
+        updatedConfig.requestTimeoutMs = value;
+      }
+      continue;
+    }
+
+    if (selection === 9) {
+      const value = await promptConfigValue(
+        "Default action (suggest/ask/explain)",
+        updatedConfig.defaultAction
+      );
+      if (value !== null) {
+        setConfigValue("defaultAction", value);
+        updatedConfig.defaultAction = value;
+      }
+      continue;
+    }
+
+    if (selection === 10) {
+      const value = await promptConfigValue(
         "Render Markdown (true/false)",
         updatedConfig.renderMarkdown
       );
@@ -331,7 +406,7 @@ async function runConfigTui(config) {
       continue;
     }
 
-    if (selection === 9) {
+    if (selection === 11) {
       const value = await promptConfigValue("Debug Render (true/false)", updatedConfig.debugRender);
       if (value !== null) {
         setConfigValue("debugRender", value);
@@ -340,7 +415,7 @@ async function runConfigTui(config) {
       continue;
     }
 
-    if (selection === 10) {
+    if (selection === 12) {
       const value = await promptConfigValue(
         "Detailed Suggest (true/false)",
         updatedConfig.detailedSuggest
@@ -352,7 +427,7 @@ async function runConfigTui(config) {
       continue;
     }
 
-    if (selection === 11) {
+    if (selection === 13) {
       cleanup();
       term("Configuration saved.\n");
       break;
@@ -399,6 +474,11 @@ async function runChat(config) {
     }
     if (config.debugRender) {
       term(`\n--- RAW ---\n${reply}\n`);
+    }
+    if (!reply || !reply.trim()) {
+      term(
+        "\nNo response from the model. The request may have timed out or returned empty content. Consider increasing requestTimeoutMs in the config or enabling streaming."
+      );
     }
     term("\n\n");
     messages.push({ role: "assistant", content: reply });
@@ -547,6 +627,17 @@ export async function runCli(argv) {
       term.processExit(1);
     }
     await runSinglePrompt(args[0], prompt, config);
+    return;
+  }
+
+  if (!args[0].startsWith("-")) {
+    const prompt = args.join(" ").trim();
+    if (!prompt) {
+      term("Error: missing prompt.\n");
+      term.processExit(1);
+    }
+    const defaultAction = normalizeDefaultAction(config.defaultAction);
+    await runSinglePrompt(defaultAction, prompt, config);
     return;
   }
 

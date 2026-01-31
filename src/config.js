@@ -11,6 +11,8 @@ const DEFAULT_CONFIG = {
   temperature: 0.7,
   maxTokens: 512,
   stream: true,
+  requestTimeoutMs: 300000,
+  defaultAction: "suggest",
   renderMarkdown: true,
   debugRender: false,
   detailedSuggest: false,
