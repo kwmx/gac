@@ -162,3 +162,4 @@ GNU General Public License v3.0. See `LICENSE`.
 ## Disclaimer
 
 This was mostly vibe coded and I'm treating it as a fun side project / tool that is likely to remain improved and updated by agentic models.
+Some notes on ```runbook``` the command is kinda dangerous i tried adding some guard rails by making a list of blocked commands. However, please be responsible and keep in mind that the model may return some commands that need editing and the program will just execute these commands one by one without checking for any values or changes it should make before
