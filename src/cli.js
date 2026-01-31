@@ -23,6 +23,9 @@ function printHelp() {
   term(
     `  -d, --detailed-suggest  Provide more detailed suggestions (only in suggest mode)\n`
   );
+  term(
+    `  --detailed-context     Include current directory context in explain/suggest prompts\n`
+  );
   term(`  -h, --help        Show this help message\n`);
   term(`\n`);
   term(`Usage:\n`);
@@ -142,6 +145,29 @@ Attempt to make it a single line response where possible. Prefer commands and co
   return null;
 }
 
+function formatDirectoryListing(entries) {
+  if (!entries.length) return "(empty)";
+  return entries
+    .map((entry) => {
+      if (entry.isDirectory()) return `${entry.name}/`;
+      if (entry.isSymbolicLink()) return `${entry.name}@`;
+      return entry.name;
+    })
+    .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }))
+    .join("\n");
+}
+
+function buildDirectoryContext() {
+  const cwd = process.cwd();
+  try {
+    const entries = fs.readdirSync(cwd, { withFileTypes: true });
+    const listing = formatDirectoryListing(entries);
+    return `Current directory: ${cwd}\nls:\n${listing}`;
+  } catch (err) {
+    return `Current directory: ${cwd}\nls: (unavailable: ${err.message})`;
+  }
+}
+
 function normalizeDefaultAction(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (normalized === "ask" || normalized === "suggest" || normalized === "explain") {
@@ -154,6 +180,15 @@ async function runSinglePrompt(mode, prompt, config) {
   const system = buildSystemPrompt(mode, config);
   const messages = [];
   if (system) messages.push({ role: "system", content: system });
+  if (
+    (mode === "suggest" || mode === "explain") &&
+    config.detailedContext === true
+  ) {
+    messages.push({
+      role: "system",
+      content: `Relevant context:\n${buildDirectoryContext()}`,
+    });
+  }
   messages.push({ role: "user", content: prompt });
 
   const reply = await chatCompletion(config, messages);
@@ -274,6 +309,7 @@ async function runConfigTui(config) {
       `Render Markdown: ${formatConfigValue(updatedConfig.renderMarkdown)}`,
       `Debug Render: ${formatConfigValue(updatedConfig.debugRender)}`,
       `Detailed Suggest: ${formatConfigValue(updatedConfig.detailedSuggest)}`,
+      `Detailed Context (explain/suggest): ${formatConfigValue(updatedConfig.detailedContext)}`,
       "Save and exit",
     ];
 
@@ -428,6 +464,18 @@ async function runConfigTui(config) {
     }
 
     if (selection === 13) {
+      const value = await promptConfigValue(
+        "Detailed Context (true/false)",
+        updatedConfig.detailedContext
+      );
+      if (value !== null) {
+        setConfigValue("detailedContext", value);
+        updatedConfig.detailedContext = value;
+      }
+      continue;
+    }
+
+    if (selection === 14) {
       cleanup();
       term("Configuration saved.\n");
       break;
@@ -570,6 +618,17 @@ export async function runCli(argv) {
     }
     if (shortDetailedSuggestIndex !== -1) {
       args.splice(shortDetailedSuggestIndex, 1);
+    }
+  }
+  const detailedContextIndex = args.indexOf("--detailed-context");
+  const detailedContextAliasIndex = args.indexOf("--detailed-cont");
+  if (detailedContextIndex !== -1 || detailedContextAliasIndex !== -1) {
+    config.detailedContext = true;
+    if (detailedContextIndex !== -1) {
+      args.splice(detailedContextIndex, 1);
+    }
+    if (detailedContextAliasIndex !== -1) {
+      args.splice(detailedContextAliasIndex, 1);
     }
   }
 

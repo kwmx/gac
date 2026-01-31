@@ -55,8 +55,8 @@ Flags:
 
 - `--no-render` disables markdown styling for that run.
 - `--debug-render` prints the raw model output after the rendered response.
-
 - `-d, --detailed-suggest` enable more detailed, step-by-step suggestions in `suggest` mode (can also be set via config key `detailedSuggest`).
+- `--detailed-context` include current directory context in `suggest`/`explain` prompts (can also be set via config key `detailedContext`).
 
 ## Configuration
 
@@ -75,6 +75,7 @@ gac config set baseUrl http://localhost:4891
 gac config set model "Llama 3 8B Instruct"
 gac config set markdownStyles.codeStyles '["#8be9fd"]'
 gac config set detailedSuggest true
+gac config set detailedContext true
 ```
 
 ### Core settings
@@ -90,6 +91,7 @@ gac config set detailedSuggest true
 - `requestTimeoutMs` (number): request timeout in milliseconds (0 to disable). Useful for larger models or slower servers.
 - `defaultAction` (string): default mode for direct prompts (`suggest`, `ask`, or `explain`).
 - `detailedSuggest` (boolean): when `true`, `suggest` mode returns more detailed, step-by-step suggestions.
+- `detailedContext` (boolean): when `true`, `suggest`/`explain` prompts include the current directory and `ls` output.
 - `renderMarkdown` (boolean)
 
 ### Markdown styling
