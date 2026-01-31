@@ -56,6 +56,12 @@ async function parseStream(response, onToken, renderer) {
   let buffer = "";
   let fullText = "";
   let lineBuffer = "";
+  const flushLineBuffer = () => {
+    if (renderer && lineBuffer) {
+      onToken(renderer.renderLine(lineBuffer));
+      lineBuffer = "";
+    }
+  };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -70,6 +76,7 @@ async function parseStream(response, onToken, renderer) {
       if (!trimmed || !trimmed.startsWith("data:")) continue;
       const payload = trimmed.replace(/^data:\s*/, "");
       if (payload === "[DONE]") {
+        flushLineBuffer();
         return fullText;
       }
 
@@ -108,6 +115,12 @@ async function parseOllamaStream(response, onToken, renderer) {
   let buffer = "";
   let fullText = "";
   let lineBuffer = "";
+  const flushLineBuffer = () => {
+    if (renderer && lineBuffer) {
+      onToken(renderer.renderLine(lineBuffer));
+      lineBuffer = "";
+    }
+  };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -123,6 +136,7 @@ async function parseOllamaStream(response, onToken, renderer) {
       try {
         const json = JSON.parse(trimmed);
         if (json.done) {
+          flushLineBuffer();
           return fullText;
         }
         const delta = getOllamaContentDelta(json);
