@@ -289,35 +289,127 @@ function printRemainingCommands(commands, startIndex) {
   });
 }
 
-function runShellCommand(command) {
-  return new Promise((resolve) => {
-    const child = spawn(command, { shell: true });
-    let stdout = "";
-    let stderr = "";
-    let finished = false;
-    const finalize = (result) => {
-      if (finished) return;
-      finished = true;
-      resolve(result);
-    };
+function createRunbookShell() {
+  const shell = process.env.SHELL || "bash";
+  const child = spawn(shell, ["-l"], { stdio: "pipe" });
+  const session = {
+    child,
+    pending: null,
+    closed: false,
+  };
 
-    child.stdout.on("data", (data) => {
-      const text = data.toString();
-      stdout += text;
+  const finalizePending = (result) => {
+    if (!session.pending) return;
+    const pending = session.pending;
+    session.pending = null;
+    pending.resolve(result);
+  };
+
+  const handleStdout = (data) => {
+    const text = data.toString();
+    const pending = session.pending;
+    if (!pending) {
       term(text);
-    });
-    child.stderr.on("data", (data) => {
-      const text = data.toString();
-      stderr += text;
-      term(text);
-    });
-    child.on("error", (err) => {
-      const message = `Failed to start command: ${err.message}\n`;
-      stderr += message;
+      return;
+    }
+    pending.buffer += text;
+    let output = "";
+    while (true) {
+      const markerIndex = pending.buffer.indexOf(pending.marker);
+      if (markerIndex === -1) {
+        output += pending.buffer;
+        pending.buffer = "";
+        break;
+      }
+      output += pending.buffer.slice(0, markerIndex);
+      const afterMarker = pending.buffer.slice(markerIndex + pending.marker.length);
+      const endIndex = afterMarker.indexOf("__");
+      if (endIndex === -1) {
+        pending.buffer = pending.buffer.slice(markerIndex);
+        break;
+      }
+      const exitCode = Number.parseInt(afterMarker.slice(0, endIndex), 10);
+      pending.exitCode = Number.isNaN(exitCode) ? 1 : exitCode;
+      pending.buffer = afterMarker.slice(endIndex + 2);
+      pending.done = true;
+    }
+    if (output) {
+      pending.stdout += output;
+      term(output);
+    }
+    if (pending.done) {
+      finalizePending({
+        code: pending.exitCode ?? 0,
+        stdout: pending.stdout,
+        stderr: pending.stderr,
+      });
+    }
+  };
+
+  const handleStderr = (data) => {
+    const text = data.toString();
+    const pending = session.pending;
+    if (pending) {
+      pending.stderr += text;
+    }
+    term(text);
+  };
+
+  child.stdout.on("data", handleStdout);
+  child.stderr.on("data", handleStderr);
+  child.on("error", (err) => {
+    const message = `Failed to start command: ${err.message}\n`;
+    if (session.pending) {
+      session.pending.stderr += message;
+      finalizePending({ code: 1, stdout: session.pending.stdout, stderr: session.pending.stderr });
+    }
+    term(message);
+    session.closed = true;
+  });
+  child.on("close", (code) => {
+    session.closed = true;
+    if (session.pending) {
+      const message = `Shell session ended unexpectedly (exit code ${code ?? "unknown"}).\n`;
+      session.pending.stderr += message;
+      finalizePending({ code: code ?? 1, stdout: session.pending.stdout, stderr: session.pending.stderr });
       term(message);
-      finalize({ code: 1, stdout, stderr });
+    }
+  });
+
+  child.stdin.write("set -o pipefail\n");
+  return session;
+}
+
+function closeRunbookShell(session) {
+  if (!session || session.closed) return;
+  session.child.stdin.end("exit\n");
+}
+
+function runShellCommand(session, command) {
+  if (!session || session.closed) {
+    return Promise.resolve({
+      code: 1,
+      stdout: "",
+      stderr: "Shell session is not available.\n",
     });
-    child.on("close", (code) => finalize({ code, stdout, stderr }));
+  }
+  return new Promise((resolve) => {
+    const token = `gac_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const marker = `__GAC_EXIT__${token}__:`;
+    session.pending = {
+      resolve,
+      stdout: "",
+      stderr: "",
+      buffer: "",
+      marker,
+      done: false,
+      exitCode: null,
+    };
+    session.child.stdin.write(`${command}\n`);
+    session.child.stdin.write(`__gac_status=$?\n`);
+    session.child.stdin.write(
+      `printf "__GAC_EXIT__${token}__:%s__\\n" "$__gac_status"\n`
+    );
   });
 }
 
@@ -403,6 +495,7 @@ async function runRunbook(prompt, config) {
   }
 
   const blockedList = loadBlockedCommands();
+  const shellSession = createRunbookShell();
   for (let i = 0; i < commands.length; i += 1) {
     const entry = commands[i];
     const blocked = findBlockedCommand(entry.command, blockedList);
@@ -414,6 +507,7 @@ async function runRunbook(prompt, config) {
       );
       term("No command was run due to safety guards.\n");
       printRemainingCommands(commands, i);
+      closeRunbookShell(shellSession);
       return;
     }
 
@@ -428,11 +522,12 @@ async function runRunbook(prompt, config) {
     if (!runStep) {
       term(`Canceled at command ${i + 1}. Stopping.\n`);
       printRemainingCommands(commands, i);
+      closeRunbookShell(shellSession);
       return;
     }
 
     term(`\n$ ${entry.command}\n`);
-    const result = await runShellCommand(entry.command);
+    const result = await runShellCommand(shellSession, entry.command);
     if (result.code !== 0) {
       term(
         `\nCommand failed (step ${i + 1}) with exit code ${result.code}. Stopping.\n`
@@ -441,11 +536,13 @@ async function runRunbook(prompt, config) {
         term(`Issue:\n${result.stderr}\n`);
       }
       printRemainingCommands(commands, i + 1);
+      closeRunbookShell(shellSession);
       return;
     }
     term("\n");
   }
 
+  closeRunbookShell(shellSession);
   term("All commands completed successfully.\n");
 }
 
