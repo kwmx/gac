@@ -41,6 +41,15 @@ function buildOpenAiHeaders(apiKey) {
   return headers;
 }
 
+function createTimeoutController(timeoutMs) {
+  if (!timeoutMs || Number.isNaN(timeoutMs) || timeoutMs <= 0) {
+    return null;
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return { controller, timeoutId };
+}
+
 async function parseStream(response, onToken, renderer) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -143,9 +152,13 @@ async function parseOllamaStream(response, onToken, renderer) {
   return fullText;
 }
 
-async function fetchJson(url, payload, errorLabel) {
+async function fetchJson(url, payload, errorLabel, timeoutMs) {
+  const timeout = createTimeoutController(timeoutMs);
   try {
-    const response = await fetch(url, payload);
+    const response = await fetch(url, {
+      ...payload,
+      signal: timeout ? timeout.controller.signal : undefined,
+    });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`${errorLabel} error ${response.status}: ${text}`);
@@ -155,19 +168,39 @@ async function fetchJson(url, payload, errorLabel) {
     if (err.message && err.message.startsWith(`${errorLabel} error`)) {
       throw err;
     }
+    if (err.name === "AbortError") {
+      throw new Error(
+        `${errorLabel} request timed out after ${timeoutMs}ms. Increase requestTimeoutMs in config if needed.`
+      );
+    }
     throw new Error(`Failed to connect to ${url}. (${err.message})`);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout.timeoutId);
+    }
   }
 }
 
-async function fetchCompletion(url, payload, headers, errorLabel) {
+async function fetchCompletion(url, payload, headers, errorLabel, timeoutMs) {
+  const timeout = createTimeoutController(timeoutMs);
   try {
     return await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
+      signal: timeout ? timeout.controller.signal : undefined,
     });
   } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(
+        `${errorLabel} request timed out after ${timeoutMs}ms. Increase requestTimeoutMs in config if needed.`
+      );
+    }
     throw new Error(`Failed to connect to ${url}. (${err.message})`);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout.timeoutId);
+    }
   }
 }
 
@@ -178,23 +211,25 @@ async function handleError(response, errorLabel) {
 
 export async function listModels(config) {
   const provider = getProvider(config);
+  const timeoutMs = Number(config.requestTimeoutMs);
   if (provider === "ollama") {
     const baseUrl = normalizeOllamaBaseUrl(config.ollamaBaseUrl);
     const url = `${baseUrl}/api/tags`;
-    const json = await fetchJson(url, { method: "GET" }, "Ollama");
+    const json = await fetchJson(url, { method: "GET" }, "Ollama", timeoutMs);
     if (!json || !Array.isArray(json.models)) return [];
     return json.models.map((model) => model.name).filter(Boolean);
   }
 
   const url = `${normalizeOpenAiBaseUrl(config.baseUrl)}/models`;
   const headers = buildOpenAiHeaders(config.apiKey);
-  const json = await fetchJson(url, { method: "GET", headers }, "OpenAI");
+  const json = await fetchJson(url, { method: "GET", headers }, "OpenAI", timeoutMs);
   if (!json || !Array.isArray(json.data)) return [];
   return json.data.map((model) => model.id).filter(Boolean);
 }
 
 async function openAiChatCompletion(config, messages) {
   const url = `${normalizeOpenAiBaseUrl(config.baseUrl)}/chat/completions`;
+  const timeoutMs = Number(config.requestTimeoutMs);
   const payload = {
     model: config.model,
     messages,
@@ -204,7 +239,7 @@ async function openAiChatCompletion(config, messages) {
   };
 
   const headers = buildOpenAiHeaders(config.apiKey);
-  let response = await fetchCompletion(url, payload, headers, "OpenAI");
+  let response = await fetchCompletion(url, payload, headers, "OpenAI", timeoutMs);
 
   const renderer = config.renderMarkdown
     ? createMarkdownRenderer(config.markdownStyles)
@@ -219,7 +254,7 @@ async function openAiChatCompletion(config, messages) {
       text.includes("not supported")
     ) {
       const retryPayload = { ...payload, stream: false };
-      response = await fetchCompletion(url, retryPayload, headers, "OpenAI");
+      response = await fetchCompletion(url, retryPayload, headers, "OpenAI", timeoutMs);
       if (!response.ok) {
         await handleError(response, "OpenAI");
       }
@@ -258,6 +293,7 @@ async function openAiChatCompletion(config, messages) {
 async function ollamaChatCompletion(config, messages) {
   const baseUrl = normalizeOllamaBaseUrl(config.ollamaBaseUrl);
   const url = `${baseUrl}/api/chat`;
+  const timeoutMs = Number(config.requestTimeoutMs);
   const payload = {
     model: config.model,
     messages,
@@ -275,7 +311,8 @@ async function ollamaChatCompletion(config, messages) {
     url,
     payload,
     { "Content-Type": "application/json" },
-    "Ollama"
+    "Ollama",
+    timeoutMs
   );
 
   if (!response.ok) {
