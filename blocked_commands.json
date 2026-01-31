@@ -1,0 +1,199 @@
+{
+  "blocked": [
+    {
+      "pattern": "\\brm\\s+-rf\\s+/(\\s|$)",
+      "reason": "Recursive deletes on the root filesystem are destructive.",
+      "example": "rm -rf /"
+    },
+    {
+      "pattern": "\\brm\\s+-rf\\s+--no-preserve-root",
+      "reason": "Overrides safety checks for destructive deletes.",
+      "example": "rm -rf --no-preserve-root /"
+    },
+    {
+      "pattern": "\\brm\\s+-rf\\s+~(\\s|$)",
+      "reason": "Deleting the home directory is destructive.",
+      "example": "rm -rf ~"
+    },
+    {
+      "pattern": "\\brm\\s+-rf\\s+\\$HOME(\\s|$)",
+      "reason": "Deleting the home directory is destructive.",
+      "example": "rm -rf $HOME"
+    },
+    {
+      "pattern": "\\brm\\s+-rf\\s+/Users/",
+      "reason": "Deleting macOS user directories is destructive.",
+      "example": "rm -rf /Users/alex"
+    },
+    {
+      "pattern": "\\brm\\s+-rf\\s+/home/",
+      "reason": "Deleting user home directories is destructive.",
+      "example": "rm -rf /home/alex"
+    },
+    {
+      "pattern": "\\brm\\s+-rf\\s+/(System|Library|Applications|usr|bin|sbin|etc)(\\s|$)",
+      "reason": "Deleting core system directories is destructive.",
+      "example": "rm -rf /System"
+    },
+    {
+      "pattern": "\\bmkfs(\\.[a-z0-9]+)?\\b",
+      "reason": "Formatting a filesystem destroys data.",
+      "example": "mkfs.ext4 /dev/sda1"
+    },
+    {
+      "pattern": "\\b(newfs|newfs_msdos|newfs_exfat)\\b",
+      "reason": "Formatting a filesystem destroys data (BSD/macOS).",
+      "example": "newfs /dev/da0"
+    },
+    {
+      "pattern": "\\b(mkfs|fdisk|cfdisk|sfdisk|parted|gdisk|sgdisk|diskpart)\\b",
+      "reason": "Disk partitioning commands can destroy data.",
+      "example": "diskpart"
+    },
+    {
+      "pattern": "\\bgpart\\s+(destroy|delete)",
+      "reason": "FreeBSD partition tools can destroy data.",
+      "example": "gpart destroy -F ada0"
+    },
+    {
+      "pattern": "\\bdd\\s+if=/dev/(zero|random|urandom)",
+      "reason": "Raw disk writes are destructive without safeguards.",
+      "example": "dd if=/dev/zero of=/dev/sda"
+    },
+    {
+      "pattern": "\\bdd\\s+if=",
+      "reason": "Raw disk writes are destructive without safeguards.",
+      "example": "dd if=/dev/zero of=/dev/sda"
+    },
+    {
+      "pattern": "\\bdd\\s+of=/dev/(sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\\d+n\\d+|mmcblk\\d+|rdisk\\d+|disk\\d+|da\\d+|ada\\d+)",
+      "reason": "Writes directly to block devices.",
+      "example": "dd if=image.iso of=/dev/rdisk2"
+    },
+    {
+      "pattern": "\\bwipefs\\b",
+      "reason": "Wipes filesystem signatures and data.",
+      "example": "wipefs -a /dev/sda"
+    },
+    {
+      "pattern": "\\bblkdiscard\\b",
+      "reason": "Discarding blocks on a device is destructive.",
+      "example": "blkdiscard /dev/nvme0n1"
+    },
+    {
+      "pattern": "\\bshred\\b",
+      "reason": "Secure erase utilities destroy data.",
+      "example": "shred -v /dev/sda"
+    },
+    {
+      "pattern": "\\b(srm|wipe)\\b",
+      "reason": "Secure erase utilities destroy data.",
+      "example": "srm -rf ~/Documents"
+    },
+    {
+      "pattern": "\\b(zpool\\s+destroy|zpool\\s+labelclear|zfs\\s+destroy)\\b",
+      "reason": "ZFS pool or dataset destruction is irreversible.",
+      "example": "zpool destroy tank"
+    },
+    {
+      "pattern": "\\b(lvremove|vgremove|pvremove)\\b",
+      "reason": "Logical volume removal destroys data.",
+      "example": "lvremove /dev/vg0/lv0"
+    },
+    {
+      "pattern": "\\b(mdadmin|mdadm)\\s+--zero-superblock",
+      "reason": "RAID superblock erasure destroys arrays.",
+      "example": "mdadm --zero-superblock /dev/sda"
+    },
+    {
+      "pattern": "\\b(mdadmin|mdadm)\\s+--stop",
+      "reason": "Stopping RAID arrays can be destructive.",
+      "example": "mdadm --stop /dev/md0"
+    },
+    {
+      "pattern": "\\bcryptsetup\\s+(luksFormat|erase)",
+      "reason": "Encrypted volume formatting destroys data.",
+      "example": "cryptsetup luksFormat /dev/sda"
+    },
+    {
+      "pattern": "\\bdiskutil\\s+erase(Disk|Volume)",
+      "reason": "macOS disk erase commands destroy data.",
+      "example": "diskutil eraseDisk APFS NAME /dev/disk2"
+    },
+    {
+      "pattern": "\\bdiskutil\\s+apfs\\s+delete",
+      "reason": "Deleting APFS volumes destroys data.",
+      "example": "diskutil apfs deleteVolume disk3s1"
+    },
+    {
+      "pattern": "\\bshutdown\\b|\\breboot\\b|\\bpoweroff\\b|\\bhalt\\b",
+      "reason": "System power commands interrupt running work.",
+      "example": "shutdown -h now"
+    },
+    {
+      "pattern": "\\binit\\s+[06]\\b",
+      "reason": "System shutdown/reboot runlevels are blocked.",
+      "example": "init 0"
+    },
+    {
+      "pattern": "\\bsystemctl\\s+(poweroff|reboot|halt)",
+      "reason": "System power commands interrupt running work.",
+      "example": "systemctl poweroff"
+    },
+    {
+      "pattern": "\\bkill\\s+-9\\s+-1\\b",
+      "reason": "Kills all processes on the system.",
+      "example": "kill -9 -1"
+    },
+    {
+      "pattern": "\\bkillall\\s+-9\\b",
+      "reason": "Force-kills processes system-wide.",
+      "example": "killall -9"
+    },
+    {
+      "pattern": ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*\\&\\s*}\\s*;",
+      "reason": "Fork bomb commands are destructive.",
+      "example": ":(){ :|:& };:"
+    },
+    {
+      "pattern": "\\bchmod\\s+-R\\s+777\\s+/",
+      "reason": "Recursive permission changes to root are unsafe.",
+      "example": "chmod -R 777 /"
+    },
+    {
+      "pattern": "\\bchmod\\s+-R\\s+000\\s+/",
+      "reason": "Recursive permission removal on root is unsafe.",
+      "example": "chmod -R 000 /"
+    },
+    {
+      "pattern": "\\bchown\\s+-R\\b",
+      "reason": "Recursive ownership changes are risky without review.",
+      "example": "chown -R root:root /"
+    },
+    {
+      "pattern": "\\b(del|erase)\\b.*\\/s",
+      "reason": "Recursive deletes on Windows are destructive.",
+      "example": "del /s /q C:\\\\"
+    },
+    {
+      "pattern": "\\b(rd|rmdir)\\b.*\\/s\\s+/q",
+      "reason": "Recursive deletes on Windows are destructive.",
+      "example": "rmdir /s /q C:\\\\"
+    },
+    {
+      "pattern": "\\bformat\\b",
+      "reason": "Formatting disks or volumes destroys data.",
+      "example": "format C:"
+    },
+    {
+      "pattern": "\\bdiskpart\\b.*\\bclean\\b",
+      "reason": "Diskpart clean wipes partition data.",
+      "example": "diskpart -> clean"
+    },
+    {
+      "pattern": "\\bcipher\\b.*\\/w:",
+      "reason": "Windows cipher wipe destroys data.",
+      "example": "cipher /w:C:"
+    }
+  ]
+}

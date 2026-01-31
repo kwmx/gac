@@ -2,10 +2,15 @@ import terminalKit from "terminal-kit";
 import { chatCompletion, listModels } from "./gpt4all.js";
 import { getConfigPath, loadConfig, setConfigValue } from "./config.js";
 import { createMarkdownRenderer } from "./markdown.js";
+import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
+import path from "path";
 import process from "process";
+import { fileURLToPath } from "url";
 const { terminal: term } = terminalKit;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BLOCKED_COMMANDS_PATH = path.resolve(__dirname, "../blocked_commands.json");
 
 function printHelp() {
   term(`gac - OpenAI-compatible & Ollama CLI\n\n`);
@@ -14,6 +19,7 @@ function printHelp() {
   term(`  suggest           Suggestion mode\n`);
   term(`  explain           Explanation mode\n`);
   term(`  ask               Ask mode\n`);
+  term(`  runbook           Step-by-step commands with approval gates\n`);
   term(`  chat              Interactive chat mode\n`);
   term(`  models            List models and set default\n`);
   term(`  config            View or edit configuration\n`);
@@ -33,6 +39,7 @@ function printHelp() {
   term(`  gac suggest "How do I connect to ssh server on port 5322"\n`);
   term(`  gac explain "How do I use rsync?"\n`);
   term(`  gac ask "What is the best way to learn JavaScript?"\n`);
+  term(`  gac runbook "Set up a new Node.js project with eslint"\n`);
   term(`  gac chat\n`);
   term(`  gac models\n`);
   term(`  gac config\n`);
@@ -124,9 +131,13 @@ function getOSVersion() {
   }
   return "Unknown OS";
 }
-function buildSystemPrompt(mode, config) {
+function getOsGuidance() {
   const osInfo = getOSVersion();
-  const osGuidance = `The user is using a system with the following OS: ${osInfo}. When providing commands or package install steps, use the native tooling for that OS (e.g., dnf for Fedora, apt for Debian/Ubuntu). Avoid giving instructions for other distros unless explicitly requested.`;
+  return `The user is using a system with the following OS: ${osInfo}. When providing commands or package install steps, use the native tooling for that OS (e.g., dnf for Fedora, apt for Debian/Ubuntu). Avoid giving instructions for other distros unless explicitly requested.`;
+}
+
+function buildSystemPrompt(mode, config) {
+  const osGuidance = getOsGuidance();
 
   if (mode === "suggest") {
     if (config.detailedSuggest === true) {
@@ -141,6 +152,9 @@ Attempt to make it a single line response where possible. Prefer commands and co
   }
   if (mode === "explain") {
     return `Explain step-by-step with a short example if helpful. ${osGuidance}`;
+  }
+  if (mode === "runbook") {
+    return `You are an expert terminal assistant. ${osGuidance} Provide a JSON response only (no markdown, no extra text) with the following shape:\n{\n  \"commands\": [\n    { \"description\": \"short description\", \"command\": \"shell command\" }\n  ],\n  \"notes\": [\"optional manual steps or caveats\"]\n}\nInclude only safe, non-destructive commands. Never include destructive or irreversible commands, and avoid commands that modify or delete large portions of the filesystem.`;
   }
   return null;
 }
@@ -166,6 +180,145 @@ function buildDirectoryContext() {
   } catch (err) {
     return `Current directory: ${cwd}\nls: (unavailable: ${err.message})`;
   }
+}
+
+function buildRunbookContext() {
+  const shell = process.env.SHELL || process.env.ComSpec || "unknown";
+  const user = os.userInfo().username;
+  return [
+    buildDirectoryContext(),
+    `Shell: ${shell}`,
+    `Node.js: ${process.version}`,
+    `User: ${user}`,
+  ].join("\n");
+}
+
+function normalizeCommandText(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function loadBlockedCommands() {
+  try {
+    const raw = fs.readFileSync(BLOCKED_COMMANDS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.blocked)) return parsed.blocked;
+    return [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function findBlockedCommand(command, blockedList) {
+  const raw = String(command || "");
+  const normalized = normalizeCommandText(raw);
+  return blockedList.find((entry) => {
+    const patternText = String(entry.pattern || entry || "").trim();
+    if (!patternText) return false;
+    try {
+      const regex = new RegExp(patternText, "i");
+      if (regex.test(raw)) return true;
+    } catch (err) {
+      // Fall back to substring check if regex parsing fails.
+    }
+    const normalizedPattern = normalizeCommandText(patternText);
+    return normalizedPattern && normalized.includes(normalizedPattern);
+  });
+}
+
+function extractJsonPayload(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch ? fencedMatch[1].trim() : trimmed;
+  const firstBrace = candidate.indexOf("{");
+  const lastBrace = candidate.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1) return null;
+  const jsonText = candidate.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(jsonText);
+  } catch (err) {
+    return null;
+  }
+}
+
+function normalizeRunbookCommands(payload) {
+  if (!payload || !Array.isArray(payload.commands)) {
+    return { commands: [], notes: [] };
+  }
+  const commands = payload.commands
+    .map((item) => {
+      if (typeof item === "string") {
+        return { description: "", command: item };
+      }
+      if (!item || typeof item !== "object") return null;
+      return {
+        description: String(item.description || item.title || "").trim(),
+        command: String(item.command || item.cmd || "").trim(),
+      };
+    })
+    .filter((item) => item && item.command);
+  const notes = Array.isArray(payload.notes)
+    ? payload.notes.map((note) => String(note)).filter(Boolean)
+    : [];
+  return { commands, notes };
+}
+
+function printRunbookCommands(commands) {
+  commands.forEach((entry, index) => {
+    term(`${index + 1}. `);
+    if (entry.description) {
+      term(`${entry.description}\n   `);
+    }
+    term(`${entry.command}\n`);
+  });
+}
+
+function printRemainingCommands(commands, startIndex) {
+  if (startIndex >= commands.length) return;
+  term("\nPlanned next commands:\n");
+  commands.slice(startIndex).forEach((entry, offset) => {
+    term(`${startIndex + offset + 1}. `);
+    if (entry.description) {
+      term(`${entry.description}\n   `);
+    }
+    term(`${entry.command}\n`);
+  });
+}
+
+function runShellCommand(command) {
+  return new Promise((resolve) => {
+    const child = spawn(command, { shell: true });
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+    const finalize = (result) => {
+      if (finished) return;
+      finished = true;
+      resolve(result);
+    };
+
+    child.stdout.on("data", (data) => {
+      const text = data.toString();
+      stdout += text;
+      term(text);
+    });
+    child.stderr.on("data", (data) => {
+      const text = data.toString();
+      stderr += text;
+      term(text);
+    });
+    child.on("error", (err) => {
+      const message = `Failed to start command: ${err.message}\n`;
+      stderr += message;
+      term(message);
+      finalize({ code: 1, stdout, stderr });
+    });
+    child.on("close", (code) => finalize({ code, stdout, stderr }));
+  });
 }
 
 function normalizeDefaultAction(action) {
@@ -209,6 +362,78 @@ async function runSinglePrompt(mode, prompt, config) {
     term(`\n--- RAW ---\n${reply}\n`);
   }
   term(`\n`);
+}
+
+async function runRunbook(prompt, config) {
+  const system = buildSystemPrompt("runbook", config);
+  const messages = [
+    { role: "system", content: system },
+    { role: "system", content: `Relevant context:\n${buildRunbookContext()}` },
+    { role: "user", content: prompt },
+  ];
+  const runbookConfig = {
+    ...config,
+    stream: false,
+    renderMarkdown: false,
+    debugRender: false,
+  };
+
+  const reply = await chatCompletion(runbookConfig, messages);
+  const payload = extractJsonPayload(reply);
+  const { commands, notes } = normalizeRunbookCommands(payload);
+  if (!commands.length) {
+    term("No runnable commands were returned. Try rephrasing your request.\n");
+    return;
+  }
+
+  term("Planned commands:\n");
+  printRunbookCommands(commands);
+  if (notes.length) {
+    term("\nNotes:\n");
+    notes.forEach((note) => term(`- ${note}\n`));
+  }
+  term("\n");
+
+  const blockedList = loadBlockedCommands();
+  for (let i = 0; i < commands.length; i += 1) {
+    const entry = commands[i];
+    const blocked = findBlockedCommand(entry.command, blockedList);
+    if (blocked) {
+      term(
+        `Blocked command detected in step ${i + 1}: "${entry.command}".\nReason: ${
+          blocked.reason || "This command matches a guarded destructive pattern."
+        }\n`
+      );
+      term("No command was run due to safety guards.\n");
+      printRemainingCommands(commands, i);
+      return;
+    }
+
+    term(`Step ${i + 1}:\n`);
+    if (entry.description) {
+      term(`${entry.description}\n`);
+    }
+    term(`Command: ${entry.command}\n`);
+    const response = await inputLine("Run this command? [y/N]: ");
+    if (!["y", "yes"].includes(response.toLowerCase())) {
+      term(`Skipped command ${i + 1}. Stopping.\n`);
+      printRemainingCommands(commands, i);
+      return;
+    }
+
+    term(`\n$ ${entry.command}\n`);
+    const result = await runShellCommand(entry.command);
+    if (result.code !== 0) {
+      term(
+        `\nCommand failed (step ${i + 1}) with exit code ${result.code}. Stopping.\n`
+      );
+      printRemainingCommands(commands, i + 1);
+      return;
+    }
+    term("\n");
+  }
+
+  term("All commands completed successfully.\n");
 }
 
 async function inputLine(label) {
@@ -686,6 +911,16 @@ export async function runCli(argv) {
       term.processExit(1);
     }
     await runSinglePrompt(args[0], prompt, config);
+    return;
+  }
+
+  if (args[0] === "runbook") {
+    const prompt = args.slice(1).join(" ").trim();
+    if (!prompt) {
+      term("Error: missing prompt after runbook.\n");
+      term.processExit(1);
+    }
+    await runRunbook(prompt, config);
     return;
   }
 
