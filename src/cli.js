@@ -394,6 +394,14 @@ async function runRunbook(prompt, config) {
   }
   term("\n");
 
+  const ready = await confirmRunbookStep(
+    "Press Enter to start running the runbook (any other key to cancel): "
+  );
+  if (!ready) {
+    term("Runbook execution canceled.\n");
+    return;
+  }
+
   const blockedList = loadBlockedCommands();
   for (let i = 0; i < commands.length; i += 1) {
     const entry = commands[i];
@@ -414,9 +422,11 @@ async function runRunbook(prompt, config) {
       term(`${entry.description}\n`);
     }
     term(`Command: ${entry.command}\n`);
-    const response = await inputLine("Run this command? [y/N]: ");
-    if (!["y", "yes"].includes(response.toLowerCase())) {
-      term(`Skipped command ${i + 1}. Stopping.\n`);
+    const runStep = await confirmRunbookStep(
+      "Press Enter to run this command (any other key to cancel): "
+    );
+    if (!runStep) {
+      term(`Canceled at command ${i + 1}. Stopping.\n`);
       printRemainingCommands(commands, i);
       return;
     }
@@ -427,6 +437,9 @@ async function runRunbook(prompt, config) {
       term(
         `\nCommand failed (step ${i + 1}) with exit code ${result.code}. Stopping.\n`
       );
+      if (result.stderr.trim()) {
+        term(`Issue:\n${result.stderr}\n`);
+      }
       printRemainingCommands(commands, i + 1);
       return;
     }
@@ -434,6 +447,20 @@ async function runRunbook(prompt, config) {
   }
 
   term("All commands completed successfully.\n");
+}
+
+async function confirmRunbookStep(label) {
+  term(label);
+  return new Promise((resolve) => {
+    term.grabInput({ mouse: "button" });
+    const onKey = (name) => {
+      term.grabInput(false);
+      term.removeListener("key", onKey);
+      term("\n");
+      resolve(name === "ENTER");
+    };
+    term.on("key", onKey);
+  });
 }
 
 async function inputLine(label) {
