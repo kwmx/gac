@@ -33,6 +33,7 @@ gac "How do I push to GitHub?"
 gac suggest "How do I connect to ssh server on a custom port 5322?"
 gac explain "How do I use rsync?"
 gac suggest -d "Give me step-by-step instructions to set up an SSH server on port 5322"
+gac runbook "Set up a new Node.js project with eslint"
 ```
 
 List models and set a default:
