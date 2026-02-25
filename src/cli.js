@@ -878,7 +878,9 @@ async function runChat(config) {
       );
     }
     term("\n\n");
-    messages.push({ role: "assistant", content: reply });
+    if (reply && reply.trim()) {
+      messages.push({ role: "assistant", content: reply });
+    }
   }
 }
 
@@ -962,23 +964,19 @@ export async function runCli(argv) {
 
   if (detailedSuggestIndex !== -1 || shortDetailedSuggestIndex !== -1) {
     config.detailedSuggest = true;
-    if (detailedSuggestIndex !== -1) {
-      args.splice(detailedSuggestIndex, 1);
-    }
-    if (shortDetailedSuggestIndex !== -1) {
-      args.splice(shortDetailedSuggestIndex, 1);
-    }
+    [detailedSuggestIndex, shortDetailedSuggestIndex]
+      .filter((i) => i !== -1)
+      .sort((a, b) => b - a)
+      .forEach((i) => args.splice(i, 1));
   }
   const detailedContextIndex = args.indexOf("--detailed-context");
   const detailedContextAliasIndex = args.indexOf("--detailed-cont");
   if (detailedContextIndex !== -1 || detailedContextAliasIndex !== -1) {
     config.detailedContext = true;
-    if (detailedContextIndex !== -1) {
-      args.splice(detailedContextIndex, 1);
-    }
-    if (detailedContextAliasIndex !== -1) {
-      args.splice(detailedContextAliasIndex, 1);
-    }
+    [detailedContextIndex, detailedContextAliasIndex]
+      .filter((i) => i !== -1)
+      .sort((a, b) => b - a)
+      .forEach((i) => args.splice(i, 1));
   }
 
   if (args.length === 0 || args.includes("-h") || args.includes("--help")) {

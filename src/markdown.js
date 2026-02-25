@@ -34,7 +34,7 @@ function parseBgHex(token) {
   if (!token) return null;
   if (!token.startsWith('bg')) return null;
   const trimmed = token.replace(/^bg:/, 'bg').replace(/^bg#/, 'bg');
-  const match = trimmed.match(/^bg(#.+)$/);
+  const match = trimmed.match(/^bg(.+)$/);
   if (!match) return null;
   return parseHexColor(match[1]);
 }
