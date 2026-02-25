@@ -339,13 +339,6 @@ async function ollamaChatCompletion(config, messages) {
 
   const json = await response.json();
   const content = getOllamaContentDelta(json);
-  if (config.stream) {
-    if (renderer) {
-      term(renderer.renderText(content));
-    } else {
-      term(content);
-    }
-  }
   return content;
 }
 
