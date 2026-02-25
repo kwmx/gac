@@ -141,20 +141,33 @@ function buildSystemPrompt(mode, config) {
 
   if (mode === "suggest") {
     if (config.detailedSuggest === true) {
-      return `You are an expert technical assistant. ${osGuidance} When providing suggestions, give detailed, step-by-step instructions that the user can follow to achieve their goals. Include relevant commands, code snippets, or configurations as needed. Avoid unnecessary explanations or background information. Tailor your suggestions to be relevant to the user's operating system and environment.
-Attempt to make it a single line response where possible. Prefer commands and code snippets over lengthy explanations. Always leave commands and codes in their own line for easy copying.`;
+      return `You are an expert technical assistant. ${osGuidance} When providing suggestions, give detailed, step-by-step instructions that the user can follow to achieve their goals. For each step, include the relevant command, code snippet, or configuration change and briefly explain what it does. Place all commands and code on their own line for easy copying.`;
     } else {
-      return `You are an expert technical assistant. ${osGuidance} Provide concise and practical suggestions to help the user accomplish their tasks efficiently. Focus on clarity and brevity, ensuring that your suggestions are easy to understand and implement. Tailor your suggestions to be relevant to the user's operating system and environment. Avoid lengthy explanations or unnecessary details prefer single line commands or codes if you must include explainations make sure the commands and codes are in their own line for easy copying.`;
+      return `You are an expert technical assistant. ${osGuidance} Provide concise and practical suggestions to help the user accomplish their tasks efficiently. Focus on clarity and brevity, ensuring that your suggestions are easy to understand and implement. Tailor your suggestions to be relevant to the user's operating system and environment. Avoid lengthy explanations or unnecessary details. Prefer single-line commands or code snippets; if you must include explanations, keep them brief and place commands and code on their own line for easy copying.`;
     }
   }
   if (mode === "ask") {
-    return `Provide a helpful and accurate response to the user's question. ${osGuidance}`;
+    return `You are a helpful and knowledgeable assistant. ${osGuidance} Answer the user's question accurately and concisely. Place any commands or code on their own line for easy copying.`;
   }
   if (mode === "explain") {
-    return `Explain step-by-step with a short example if helpful. ${osGuidance}`;
+    return `You are an expert technical assistant. ${osGuidance} Explain the topic clearly, step-by-step. Include a short, practical example that illustrates the concept. Place all commands and code on their own line for easy copying.`;
+  }
+  if (mode === "chat") {
+    return `You are a helpful assistant. ${osGuidance} Engage in natural conversation, answer questions accurately, and assist with technical and general topics. Place any commands or code on their own line for easy copying.`;
   }
   if (mode === "runbook") {
-    return `You are an expert terminal assistant. ${osGuidance} Provide a JSON response only (no markdown, no extra text) with the following shape:\n{\n  \"commands\": [\n    { \"description\": \"short description\", \"command\": \"shell command\" }\n  ],\n  \"notes\": [\"optional manual steps or caveats\"]\n}\nInclude only safe, non-destructive commands. Never include destructive or irreversible commands, and avoid commands that modify or delete large portions of the filesystem.`;
+    return `You are an expert terminal assistant. ${osGuidance} Respond with JSON only — no markdown, no extra text — in this exact shape:
+{
+  "commands": [
+    { "description": "short description", "command": "shell command" }
+  ],
+  "notes": ["optional manual steps or caveats"]
+}
+Rules:
+- Include only safe, non-destructive commands.
+- Never include commands that delete, format, or irreversibly modify files or the filesystem.
+- Prefer idempotent commands that can be run more than once without causing harm.
+- Each command must be runnable as-is with no placeholders or manual substitution required.`;
   }
   return null;
 }
@@ -834,7 +847,9 @@ async function runConfigTui(config) {
 
 async function runChat(config) {
   term('Interactive chat. Type "exit" to quit.\n\n');
+  const systemPrompt = buildSystemPrompt("chat", config);
   const messages = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
   term.grabInput({ mouse: "button" });
   const cleanupChatInput = () => {
     term.grabInput(false);
