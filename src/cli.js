@@ -14,40 +14,48 @@ const BLOCKED_COMMANDS_PATH = path.resolve(__dirname, "../blocked_commands.json"
 
 function printHelp() {
   term(`gac - OpenAI-compatible & Ollama CLI\n\n`);
-  term(`Options:\n`);
-  term(`  -a                Single prompt mode (alias for ask)\n`);
-  term(`  suggest           Suggestion mode\n`);
-  term(`  explain           Explanation mode\n`);
-  term(`  ask               Ask mode\n`);
-  term(`  runbook           Step-by-step commands with approval gates\n`);
-  term(`  chat              Interactive chat mode\n`);
-  term(`  models            List models and set default\n`);
+  term(`Modes:\n`);
+  term(`  ask               Answer a question\n`);
+  term(`  suggest           Concise command/code suggestion\n`);
+  term(`  explain           Step-by-step explanation with example\n`);
+  term(`  runbook           Generate and execute shell commands with approval gates\n`);
+  term(`  chat              Interactive multi-turn conversation\n`);
+  term(`  models            List available models and set the default\n`);
   term(`  config            View or edit configuration\n`);
-  term(`  config tui        Open interactive config editor\n`);
-  term(`  --no-render      Disable markdown rendering\n`);
-  term(`  --debug-render   Show both rendered and raw output\n`);
-  term(
-    `  -d, --detailed-suggest  Provide more detailed suggestions (only in suggest mode)\n`
-  );
-  term(
-    `  --detailed-context     Include current directory context in explain/suggest prompts\n`
-  );
-  term(`  -h, --help        Show this help message\n`);
+  term(`  config tui        Open the interactive config editor\n`);
+  term(`\n`);
+  term(`Flags:\n`);
+  term(`  -a                        Shorthand for ask mode\n`);
+  term(`  -m, --model <name>        Override the model for this invocation\n`);
+  term(`  -d, --detailed-suggest    Detailed step-by-step suggestions (suggest mode)\n`);
+  term(`  --detailed-context        Include current directory listing in prompt\n`);
+  term(`  --no-render               Disable markdown rendering\n`);
+  term(`  --debug-render            Show rendered output followed by raw response\n`);
+  term(`  -h, --help                Show this help message\n`);
   term(`\n`);
   term(`Usage:\n`);
-  term(`  gac -a "Hello gpt4all"\n`);
-  term(`  gac suggest "How do I connect to ssh server on port 5322"\n`);
-  term(`  gac explain "How do I use rsync?"\n`);
   term(`  gac ask "What is the best way to learn JavaScript?"\n`);
+  term(`  gac suggest "How do I connect to SSH on port 5322"\n`);
+  term(`  gac explain "How do I use rsync?"\n`);
   term(`  gac runbook "Set up a new Node.js project with eslint"\n`);
+  term(`  gac -m llama3 suggest "fastest way to sort a list in Python"\n`);
   term(`  gac chat\n`);
   term(`  gac models\n`);
   term(`  gac config\n`);
   term(`  gac config tui\n`);
-  term(`  gac config get <key>\n`);
-  term(`  gac config set <key> <value>\n`);
-  term(`  gac --no-render -a "Raw markdown output"\n`);
-  term(`  gac --debug-render -a "Show rendered and raw output"\n`);
+  term(`  gac config get markdownStyles.codeStyles\n`);
+  term(`  gac config set model phi4\n`);
+  term(`\n`);
+  term(`Pipe / stdin support:\n`);
+  term(`  cat error.log | gac ask "what does this mean?"\n`);
+  term(`  cat script.sh | gac explain\n`);
+  term(`  git diff | gac suggest "how should I fix this?"\n`);
+  term(`\n`);
+  term(`Chat commands (inside chat mode):\n`);
+  term(`  /clear    Reset conversation history\n`);
+  term(`  /model    Show the current model\n`);
+  term(`  /help     List available chat commands\n`);
+  term(`  exit      Quit the chat\n`);
   term(`\n`);
 }
 function parseOsRelease(contents) {
@@ -426,6 +434,22 @@ function runShellCommand(session, command) {
   });
 }
 
+async function readStdin() {
+  if (process.stdin.isTTY) return "";
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { data += chunk; });
+    process.stdin.on("end", () => resolve(data.trim()));
+    process.stdin.on("error", () => resolve(""));
+  });
+}
+
+function buildCombinedPrompt(argPrompt, stdinContent) {
+  if (argPrompt && stdinContent) return `${argPrompt}\n\n${stdinContent}`;
+  return argPrompt || stdinContent;
+}
+
 function normalizeDefaultAction(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (normalized === "ask" || normalized === "suggest" || normalized === "explain") {
@@ -485,7 +509,25 @@ async function runRunbook(prompt, config) {
 
   const reply = await chatCompletion(runbookConfig, messages);
   const payload = extractJsonPayload(reply);
-  const { commands, notes } = normalizeRunbookCommands(payload);
+  let { commands, notes } = normalizeRunbookCommands(payload);
+
+  if (!commands.length) {
+    // Retry once with an explicit correction message — LLMs sometimes wrap
+    // the JSON in markdown fences or add prose despite being told not to.
+    const correctionMessages = [
+      ...messages,
+      { role: "assistant", content: reply },
+      {
+        role: "user",
+        content:
+          "Your response was not valid JSON. Please reply with valid JSON only, exactly matching the required shape. Do not include markdown, code fences, or any other text.",
+      },
+    ];
+    const retryReply = await chatCompletion(runbookConfig, correctionMessages);
+    const retryPayload = extractJsonPayload(retryReply);
+    ({ commands, notes } = normalizeRunbookCommands(retryPayload));
+  }
+
   if (!commands.length) {
     term("No runnable commands were returned. Try rephrasing your request.\n");
     return;
@@ -872,6 +914,20 @@ async function runChat(config) {
       term("Bye.\n");
       break;
     }
+    if (prompt.startsWith("/")) {
+      if (prompt === "/clear") {
+        messages.length = 0;
+        if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+        term("Conversation cleared.\n\n");
+      } else if (prompt === "/model") {
+        term(`Model: ${config.model}\n\n`);
+      } else if (prompt === "/help") {
+        term("Commands: /clear (reset history), /model (show current model), exit or quit\n\n");
+      } else {
+        term(`Unknown command: ${prompt}. Type /help for available commands.\n\n`);
+      }
+      continue;
+    }
 
     messages.push({ role: "user", content: prompt });
     term("A.I> ");
@@ -913,11 +969,9 @@ async function runModels(config) {
     term.processExit(0);
   }
 
-  term("Available models:\n");
   // Append option to keep current default at the top
   models.unshift("Keep current default");
-  models.forEach((model) => term(`- ${model}\n`));
-  term("\nSelect a default model (use arrows + Enter, Esc to cancel):\n");
+  term("Select a default model (use arrows + Enter, Esc to cancel):\n");
 
   const currentIndex = Math.max(models.indexOf(config.model), 0);
   term.grabInput({ mouse: "button" });
@@ -964,6 +1018,7 @@ async function runModels(config) {
 export async function runCli(argv) {
   const args = argv.slice(2);
   const config = loadConfig();
+  const stdinContent = await readStdin();
   const noRenderIndex = args.indexOf("--no-render");
   if (noRenderIndex !== -1) {
     config.renderMarkdown = false;
@@ -994,7 +1049,25 @@ export async function runCli(argv) {
       .forEach((i) => args.splice(i, 1));
   }
 
-  if (args.length === 0 || args.includes("-h") || args.includes("--help")) {
+  const modelFlagIndex = args.indexOf("--model") !== -1
+    ? args.indexOf("--model")
+    : args.indexOf("-m");
+  if (modelFlagIndex !== -1 && args[modelFlagIndex + 1] !== undefined) {
+    config.model = args[modelFlagIndex + 1];
+    args.splice(modelFlagIndex, 2);
+  }
+
+  if (args.includes("-h") || args.includes("--help")) {
+    printHelp();
+    return;
+  }
+
+  if (args.length === 0) {
+    if (stdinContent) {
+      const defaultAction = normalizeDefaultAction(config.defaultAction);
+      await runSinglePrompt(defaultAction, stdinContent, config);
+      return;
+    }
     printHelp();
     return;
   }
@@ -1006,7 +1079,13 @@ export async function runCli(argv) {
     }
     if (args[1] === "get" && args[2]) {
       const key = args[2];
-      term(`${config[key]}\n`);
+      const parts = key.split(".");
+      let value = config;
+      for (const part of parts) {
+        if (value === null || typeof value !== "object") { value = undefined; break; }
+        value = value[part];
+      }
+      term(`${value === undefined ? "(not found)" : JSON.stringify(value, null, 2)}\n`);
       return;
     }
     if (args[1] === "set" && args[2] && args[3] !== undefined) {
@@ -1032,7 +1111,7 @@ export async function runCli(argv) {
   }
 
   if (args[0] === "-a") {
-    const prompt = args.slice(1).join(" ").trim();
+    const prompt = buildCombinedPrompt(args.slice(1).join(" ").trim(), stdinContent);
     if (!prompt) {
       term("Error: missing prompt after -a.\n");
       term.processExit(1);
@@ -1042,7 +1121,7 @@ export async function runCli(argv) {
   }
 
   if (args[0] === "suggest" || args[0] === "explain" || args[0] === "ask") {
-    const prompt = args.slice(1).join(" ").trim();
+    const prompt = buildCombinedPrompt(args.slice(1).join(" ").trim(), stdinContent);
     if (!prompt) {
       term(`Error: missing prompt after ${args[0]}.\n`);
       term.processExit(1);
@@ -1052,7 +1131,7 @@ export async function runCli(argv) {
   }
 
   if (args[0] === "runbook") {
-    const prompt = args.slice(1).join(" ").trim();
+    const prompt = buildCombinedPrompt(args.slice(1).join(" ").trim(), stdinContent);
     if (!prompt) {
       term("Error: missing prompt after runbook.\n");
       term.processExit(1);
@@ -1062,7 +1141,7 @@ export async function runCli(argv) {
   }
 
   if (!args[0].startsWith("-")) {
-    const prompt = args.join(" ").trim();
+    const prompt = buildCombinedPrompt(args.join(" ").trim(), stdinContent);
     if (!prompt) {
       term("Error: missing prompt.\n");
       term.processExit(1);
