@@ -18,7 +18,7 @@ function printHelp() {
   term(`  ask               Answer a question\n`);
   term(`  suggest           Concise command/code suggestion\n`);
   term(`  explain           Step-by-step explanation with example\n`);
-  term(`  runbook           Generate and execute shell commands with approval gates\n`);
+  term(`  runbook           Generate shell commands with run/skip/cancel gates and AI diagnosis on failure\n`);
   term(`  chat              Interactive multi-turn conversation\n`);
   term(`  models            List available models and set the default\n`);
   term(`  config            View or edit configuration\n`);
@@ -27,6 +27,7 @@ function printHelp() {
   term(`Flags:\n`);
   term(`  -a                        Shorthand for ask mode\n`);
   term(`  -m, --model <name>        Override the model for this invocation\n`);
+  term(`  -t, --temperature <val>   Override the temperature for this invocation\n`);
   term(`  -d, --detailed-suggest    Detailed step-by-step suggestions (suggest mode)\n`);
   term(`  --detailed-context        Include current directory listing in prompt\n`);
   term(`  --no-render               Disable markdown rendering\n`);
@@ -571,14 +572,16 @@ async function runRunbook(prompt, config) {
       term(`${entry.description}\n`);
     }
     term(`Command: ${entry.command}\n`);
-    const runStep = await confirmRunbookStep(
-      "Press Enter to run this command (any other key to cancel): "
-    );
-    if (!runStep) {
+    const stepChoice = await confirmRunbookCommand();
+    if (stepChoice === "cancel") {
       term(`Canceled at command ${i + 1}. Stopping.\n`);
       printRemainingCommands(commands, i);
       closeRunbookShell(shellSession);
       return;
+    }
+    if (stepChoice === "skip") {
+      term(`Skipped step ${i + 1}.\n\n`);
+      continue;
     }
 
     term(`\n$ ${entry.command}\n`);
@@ -588,7 +591,28 @@ async function runRunbook(prompt, config) {
         `\nCommand failed (step ${i + 1}) with exit code ${result.code}. Stopping.\n`
       );
       if (result.stderr.trim()) {
-        term(`Issue:\n${result.stderr}\n`);
+        term(`Stderr:\n${result.stderr}\n`);
+      }
+      const shouldDiagnose = await confirmRunbookStep(
+        "Press Enter to ask the AI for a fix suggestion (any other key to skip): "
+      );
+      if (shouldDiagnose) {
+        const diagMessages = [
+          { role: "system", content: buildSystemPrompt("suggest", config) },
+          {
+            role: "user",
+            content: `The following shell command failed with exit code ${result.code}:\n\n${entry.command}\n\nStdout:\n${result.stdout.trim() || "(empty)"}\n\nStderr:\n${result.stderr.trim() || "(empty)"}\n\nSuggest how to diagnose or fix this.`,
+          },
+        ];
+        term("\nAI diagnosis:\n");
+        const renderer = config.renderMarkdown
+          ? createMarkdownRenderer(config.markdownStyles)
+          : null;
+        const diagReply = await chatCompletion(config, diagMessages);
+        if (!config.stream) {
+          term(renderer ? renderer.renderText(diagReply) : diagReply);
+        }
+        term("\n");
       }
       printRemainingCommands(commands, i + 1);
       closeRunbookShell(shellSession);
@@ -610,6 +634,22 @@ async function confirmRunbookStep(label) {
       term.removeListener("key", onKey);
       term("\n");
       resolve(name === "ENTER");
+    };
+    term.on("key", onKey);
+  });
+}
+
+async function confirmRunbookCommand() {
+  term("Press Enter to run, s to skip, or any other key to cancel: ");
+  return new Promise((resolve) => {
+    term.grabInput({ mouse: "button" });
+    const onKey = (name) => {
+      term.grabInput(false);
+      term.removeListener("key", onKey);
+      term("\n");
+      if (name === "ENTER") resolve("run");
+      else if (name === "s" || name === "S") resolve("skip");
+      else resolve("cancel");
     };
     term.on("key", onKey);
   });
@@ -888,7 +928,7 @@ async function runConfigTui(config) {
 }
 
 async function runChat(config) {
-  term('Interactive chat. Type "exit" to quit.\n\n');
+  term(`Interactive chat (${config.model}). Type /help for commands, exit to quit.\n\n`);
   const systemPrompt = buildSystemPrompt("chat", config);
   const messages = [];
   if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
@@ -1052,9 +1092,30 @@ export async function runCli(argv) {
   const modelFlagIndex = args.indexOf("--model") !== -1
     ? args.indexOf("--model")
     : args.indexOf("-m");
-  if (modelFlagIndex !== -1 && args[modelFlagIndex + 1] !== undefined) {
+  if (modelFlagIndex !== -1) {
+    if (args[modelFlagIndex + 1] === undefined) {
+      term("Error: --model/-m requires a model name argument.\n");
+      term.processExit(1);
+    }
     config.model = args[modelFlagIndex + 1];
     args.splice(modelFlagIndex, 2);
+  }
+
+  const tempFlagIndex = args.indexOf("--temperature") !== -1
+    ? args.indexOf("--temperature")
+    : args.indexOf("-t");
+  if (tempFlagIndex !== -1) {
+    if (args[tempFlagIndex + 1] === undefined) {
+      term("Error: --temperature/-t requires a numeric value.\n");
+      term.processExit(1);
+    }
+    const parsed = parseFloat(args[tempFlagIndex + 1]);
+    if (Number.isNaN(parsed)) {
+      term(`Error: --temperature/-t value must be a number, got "${args[tempFlagIndex + 1]}".\n`);
+      term.processExit(1);
+    }
+    config.temperature = parsed;
+    args.splice(tempFlagIndex, 2);
   }
 
   if (args.includes("-h") || args.includes("--help")) {
