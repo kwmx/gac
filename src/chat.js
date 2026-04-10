@@ -660,7 +660,10 @@ export async function runChat(config, defaultSystemPrompt) {
   while (true) {
     if (state === "picker") {
       const result = await sessionPicker(config);
-      if (result.action === "exit") term.processExit(0);
+      if (result.action === "exit") {
+        term.processExit(0);
+        return;
+      }
 
       if (result.action === "new") {
         const customPrompt = await promptNewChatSetup(defaultSystemPrompt);
@@ -673,7 +676,10 @@ export async function runChat(config, defaultSystemPrompt) {
       }
     } else {
       const result = await runChatSession(session, config, defaultSystemPrompt);
-      if (result.action === "exit") term.processExit(0);
+      if (result.action === "exit") {
+        term.processExit(0);
+        return;
+      }
 
       if (result.action === "new") {
         const customPrompt = await promptNewChatSetup(defaultSystemPrompt);
