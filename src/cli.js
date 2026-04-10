@@ -2,6 +2,7 @@ import terminalKit from "terminal-kit";
 import { chatCompletion, listModels } from "./gpt4all.js";
 import { getConfigPath, loadConfig, setConfigValue } from "./config.js";
 import { createMarkdownRenderer } from "./markdown.js";
+import { runChat } from "./chat.js";
 import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -845,59 +846,6 @@ async function runConfigTui(config) {
   }
 }
 
-async function runChat(config) {
-  term('Interactive chat. Type "exit" to quit.\n\n');
-  const systemPrompt = buildSystemPrompt("chat", config);
-  const messages = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  term.grabInput({ mouse: "button" });
-  const cleanupChatInput = () => {
-    term.grabInput(false);
-    term.removeListener("key", onKey);
-  };
-  const onKey = (name) => {
-    if (name === "CTRL_C") {
-      cleanupChatInput();
-      term("\nBye.\n");
-      term.processExit(0);
-    }
-  };
-  term.on("key", onKey);
-
-  while (true) {
-    const prompt = await inputLine("You> ");
-    if (!prompt) continue;
-    if (prompt.toLowerCase() === "exit" || prompt.toLowerCase() === "quit") {
-      cleanupChatInput();
-      term("Bye.\n");
-      break;
-    }
-
-    messages.push({ role: "user", content: prompt });
-    term("A.I> ");
-    const reply = await chatCompletion(config, messages);
-    if (!config.stream) {
-      if (config.renderMarkdown) {
-        const renderer = createMarkdownRenderer(config.markdownStyles);
-        term(renderer.renderText(reply));
-      } else {
-        term(reply);
-      }
-    }
-    if (config.debugRender) {
-      term(`\n--- RAW ---\n${reply}\n`);
-    }
-    if (!reply || !reply.trim()) {
-      term(
-        "\nNo response from the model. The request may have timed out or returned empty content. Consider increasing requestTimeoutMs in the config or enabling streaming."
-      );
-    }
-    term("\n\n");
-    if (reply && reply.trim()) {
-      messages.push({ role: "assistant", content: reply });
-    }
-  }
-}
 
 async function runModels(config) {
   let models;
@@ -1022,7 +970,8 @@ export async function runCli(argv) {
   }
 
   if (args[0] === "chat") {
-    await runChat(config);
+    const systemPrompt = buildSystemPrompt("chat", config);
+    await runChat(config, systemPrompt);
     return;
   }
 

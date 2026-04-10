@@ -50,6 +50,18 @@ function createTimeoutController(timeoutMs) {
   return { controller, timeoutId };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extract503Message(text) {
+  try {
+    const body = JSON.parse(text);
+    if (body?.error?.message) return body.error.message;
+  } catch (_) {}
+  return "Server unavailable";
+}
+
 async function parseStream(response, onToken, renderer) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -167,31 +179,41 @@ async function parseOllamaStream(response, onToken, renderer) {
 }
 
 async function fetchJson(url, payload, errorLabel, timeoutMs) {
-  const timeout = createTimeoutController(timeoutMs);
-  try {
-    const response = await fetch(url, {
-      ...payload,
-      signal: timeout ? timeout.controller.signal : undefined,
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`${errorLabel} error ${response.status}: ${text}`);
+  const maxRetries = 30;
+  const retryDelayMs = 3000;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const timeout = createTimeoutController(timeoutMs);
+    let response;
+    try {
+      response = await fetch(url, {
+        ...payload,
+        signal: timeout ? timeout.controller.signal : undefined,
+      });
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error(
+          `${errorLabel} request timed out after ${timeoutMs}ms. Increase requestTimeoutMs in config if needed.`
+        );
+      }
+      throw new Error(`Failed to connect to ${url}. (${err.message})`);
+    } finally {
+      if (timeout) clearTimeout(timeout.timeoutId);
     }
-    return await response.json();
-  } catch (err) {
-    if (err.message && err.message.startsWith(`${errorLabel} error`)) {
-      throw err;
+
+    if (response.ok) {
+      return await response.json();
     }
-    if (err.name === "AbortError") {
-      throw new Error(
-        `${errorLabel} request timed out after ${timeoutMs}ms. Increase requestTimeoutMs in config if needed.`
-      );
+
+    const text = await response.text();
+    if (response.status === 503 && attempt < maxRetries) {
+      const msg = extract503Message(text);
+      term(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
+      await sleep(retryDelayMs);
+      continue;
     }
-    throw new Error(`Failed to connect to ${url}. (${err.message})`);
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout.timeoutId);
-    }
+
+    throw new Error(`${errorLabel} error ${response.status}: ${text}`);
   }
 }
 
@@ -253,11 +275,27 @@ async function openAiChatCompletion(config, messages) {
   };
 
   const headers = buildOpenAiHeaders(config.apiKey);
-  let response = await fetchCompletion(url, payload, headers, "OpenAI", timeoutMs);
 
   const renderer = config.renderMarkdown
     ? createMarkdownRenderer(config.markdownStyles)
     : null;
+
+  const maxRetries = 30;
+  const retryDelayMs = 3000;
+  let response;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    response = await fetchCompletion(url, payload, headers, "OpenAI", timeoutMs);
+    if (response.status !== 503) break;
+
+    const text = await response.text();
+    if (attempt >= maxRetries) {
+      throw new Error(`OpenAI error ${response.status}: ${text}`);
+    }
+    const msg = extract503Message(text);
+    term(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
+    await sleep(retryDelayMs);
+  }
 
   if (!response.ok) {
     const text = await response.text();
