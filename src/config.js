@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
   debugRender: false,
   detailedSuggest: false,
   detailedContext: false,
+  showThinking: true,
   markdownStyles: {
     headerStyles: ["bold"],
     headerStylesByLevel: {

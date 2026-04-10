@@ -54,6 +54,74 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createThinkingParser({ onContent, onThinking, onThinkingEnd }) {
+  let state = "normal"; // 'normal' | 'maybe_open' | 'in_think' | 'maybe_close'
+  let tagBuf = "";
+
+  function push(text) {
+    for (const ch of text) {
+      if (state === "normal") {
+        if (ch === "<") {
+          tagBuf = "<";
+          state = "maybe_open";
+        } else {
+          onContent(ch);
+        }
+      } else if (state === "maybe_open") {
+        tagBuf += ch;
+        if ("<think>".startsWith(tagBuf)) {
+          if (tagBuf === "<think>") {
+            state = "in_think";
+            tagBuf = "";
+          }
+        } else {
+          onContent(tagBuf);
+          tagBuf = "";
+          state = "normal";
+        }
+      } else if (state === "in_think") {
+        if (ch === "<") {
+          tagBuf = "<";
+          state = "maybe_close";
+        } else {
+          onThinking(ch);
+        }
+      } else if (state === "maybe_close") {
+        tagBuf += ch;
+        if ("</think>".startsWith(tagBuf)) {
+          if (tagBuf === "</think>") {
+            state = "normal";
+            tagBuf = "";
+            onThinkingEnd();
+          }
+        } else {
+          onThinking(tagBuf);
+          tagBuf = "";
+          state = "in_think";
+        }
+      }
+    }
+  }
+
+  function flush() {
+    if (tagBuf) {
+      if (state === "in_think" || state === "maybe_close") {
+        onThinking(tagBuf);
+      } else {
+        onContent(tagBuf);
+      }
+      tagBuf = "";
+    }
+    state = "normal";
+  }
+
+  return { push, flush };
+}
+
+function stripThinkingBlocks(text) {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
 function extract503Message(text) {
   try {
     const body = JSON.parse(text);
@@ -62,18 +130,52 @@ function extract503Message(text) {
   return "Server unavailable";
 }
 
-async function parseStream(response, onToken, renderer) {
+async function parseStream(response, onToken, renderer, config) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
   let lineBuffer = "";
+  let thinkingActive = false;
+  const showThinking = config?.showThinking !== false;
+
   const flushLineBuffer = () => {
     if (renderer && lineBuffer) {
       onToken(renderer.renderLine(lineBuffer));
       lineBuffer = "";
     }
   };
+
+  const thinkingParser = createThinkingParser({
+    onContent(chunk) {
+      fullText += chunk;
+      if (!renderer) {
+        onToken(chunk);
+      } else {
+        lineBuffer += chunk;
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() || "";
+        for (const line of lines) {
+          onToken(`${renderer.renderLine(line)}\n`);
+        }
+      }
+    },
+    onThinking(chunk) {
+      if (!showThinking) return;
+      if (!thinkingActive) {
+        term.saveCursor();
+        term.dim("thinking...\n");
+        thinkingActive = true;
+      }
+      term.dim(chunk);
+    },
+    onThinkingEnd() {
+      if (!showThinking || !thinkingActive) return;
+      term.restoreCursor();
+      term.eraseDisplayBelow();
+      thinkingActive = false;
+    },
+  });
 
   while (true) {
     const { value, done } = await reader.read();
@@ -88,6 +190,7 @@ async function parseStream(response, onToken, renderer) {
       if (!trimmed || !trimmed.startsWith("data:")) continue;
       const payload = trimmed.replace(/^data:\s*/, "");
       if (payload === "[DONE]") {
+        thinkingParser.flush();
         flushLineBuffer();
         return fullText;
       }
@@ -96,17 +199,7 @@ async function parseStream(response, onToken, renderer) {
         const json = JSON.parse(payload);
         const delta = getContentDelta(json);
         if (delta) {
-          fullText += delta;
-          if (!renderer) {
-            onToken(delta);
-          } else {
-            lineBuffer += delta;
-            const lines = lineBuffer.split("\n");
-            lineBuffer = lines.pop() || "";
-            for (const line of lines) {
-              onToken(`${renderer.renderLine(line)}\n`);
-            }
-          }
+          thinkingParser.push(delta);
         }
       } catch (err) {
         // Ignore non-JSON payloads
@@ -114,6 +207,7 @@ async function parseStream(response, onToken, renderer) {
     }
   }
 
+  thinkingParser.flush();
   if (renderer && lineBuffer) {
     onToken(renderer.renderLine(lineBuffer));
   }
@@ -121,18 +215,52 @@ async function parseStream(response, onToken, renderer) {
   return fullText;
 }
 
-async function parseOllamaStream(response, onToken, renderer) {
+async function parseOllamaStream(response, onToken, renderer, config) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
   let lineBuffer = "";
+  let thinkingActive = false;
+  const showThinking = config?.showThinking !== false;
+
   const flushLineBuffer = () => {
     if (renderer && lineBuffer) {
       onToken(renderer.renderLine(lineBuffer));
       lineBuffer = "";
     }
   };
+
+  const thinkingParser = createThinkingParser({
+    onContent(chunk) {
+      fullText += chunk;
+      if (!renderer) {
+        onToken(chunk);
+      } else {
+        lineBuffer += chunk;
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() || "";
+        for (const line of lines) {
+          onToken(`${renderer.renderLine(line)}\n`);
+        }
+      }
+    },
+    onThinking(chunk) {
+      if (!showThinking) return;
+      if (!thinkingActive) {
+        term.saveCursor();
+        term.dim("thinking...\n");
+        thinkingActive = true;
+      }
+      term.dim(chunk);
+    },
+    onThinkingEnd() {
+      if (!showThinking || !thinkingActive) return;
+      term.restoreCursor();
+      term.eraseDisplayBelow();
+      thinkingActive = false;
+    },
+  });
 
   while (true) {
     const { value, done } = await reader.read();
@@ -148,22 +276,13 @@ async function parseOllamaStream(response, onToken, renderer) {
       try {
         const json = JSON.parse(trimmed);
         if (json.done) {
+          thinkingParser.flush();
           flushLineBuffer();
           return fullText;
         }
         const delta = getOllamaContentDelta(json);
         if (delta) {
-          fullText += delta;
-          if (!renderer) {
-            onToken(delta);
-          } else {
-            lineBuffer += delta;
-            const lines = lineBuffer.split("\n");
-            lineBuffer = lines.pop() || "";
-            for (const line of lines) {
-              onToken(`${renderer.renderLine(line)}\n`);
-            }
-          }
+          thinkingParser.push(delta);
         }
       } catch (err) {
         // Ignore non-JSON payloads
@@ -171,6 +290,7 @@ async function parseOllamaStream(response, onToken, renderer) {
     }
   }
 
+  thinkingParser.flush();
   if (renderer && lineBuffer) {
     onToken(renderer.renderLine(lineBuffer));
   }
@@ -311,7 +431,7 @@ async function openAiChatCompletion(config, messages) {
         await handleError(response, "OpenAI");
       }
       const json = await response.json();
-      const content = getContentDelta(json);
+      const content = stripThinkingBlocks(getContentDelta(json));
       if (renderer) {
         term(renderer.renderText(content));
       } else {
@@ -326,12 +446,12 @@ async function openAiChatCompletion(config, messages) {
   if (config.stream) {
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("text/event-stream")) {
-      return parseStream(response, (chunk) => term(chunk), renderer);
+      return parseStream(response, (chunk) => term(chunk), renderer, config);
     }
   }
 
   const json = await response.json();
-  const content = getContentDelta(json);
+  const content = stripThinkingBlocks(getContentDelta(json));
   if (config.stream) {
     if (renderer) {
       term(renderer.renderText(content));
@@ -372,11 +492,11 @@ async function ollamaChatCompletion(config, messages) {
   }
 
   if (config.stream) {
-    return parseOllamaStream(response, (chunk) => term(chunk), renderer);
+    return parseOllamaStream(response, (chunk) => term(chunk), renderer, config);
   }
 
   const json = await response.json();
-  const content = getOllamaContentDelta(json);
+  const content = stripThinkingBlocks(getOllamaContentDelta(json));
   return content;
 }
 
