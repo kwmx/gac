@@ -24,13 +24,15 @@ function sessionPath(id) {
   return path.join(getChatsDir(), `${id}.json`);
 }
 
-function createSession(name) {
+function createSession(name, customSystemPrompt) {
   const now = new Date().toISOString();
   return {
     id: randomUUID(),
     name: name || "New chat",
     createdAt: now,
     updatedAt: now,
+    customSystemPrompt: customSystemPrompt || null,
+    autoNamed: false,
     messages: [],
   };
 }
@@ -112,6 +114,16 @@ function printChatHeader(session, config) {
   term.dim(`${fill}${model}\n`);
 }
 
+function printCommandsHint() {
+  const commands = ["/help", "/new", "/sessions", "/rename", "/system", "/clear", "/retry", "/export", "exit"];
+  const line = commands.join("  ");
+  if (line.length + 1 <= tw()) {
+    term.dim(` ${line}\n`);
+  } else {
+    term.dim(` /help for all commands\n`);
+  }
+}
+
 function printHistory(session, config) {
   const msgs = session.messages.filter((m) => m.role !== "system");
   if (!msgs.length) return;
@@ -142,13 +154,80 @@ function printHistory(session, config) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// AI title generation
+// ─────────────────────────────────────────────────────────────────
+
+async function generateAiTitle(userMsg, aiMsg, config) {
+  try {
+    const titleConfig = { ...config, stream: false, renderMarkdown: false, maxTokens: 12 };
+    const msgs = [
+      {
+        role: "system",
+        content:
+          "You generate extremely short chat titles (2–5 words). Reply with ONLY the title — no punctuation at the end, no quotes, no explanation.",
+      },
+      {
+        role: "user",
+        content: `User: "${userMsg.slice(0, 300)}"\nAI: "${aiMsg.slice(0, 300)}"`,
+      },
+    ];
+    const raw = await chatCompletion(titleConfig, msgs);
+    const title = (raw || "")
+      .trim()
+      .replace(/^["']|["'.,!?]$/g, "")
+      .trim();
+    return title.length >= 2 ? title : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Chat export
+// ─────────────────────────────────────────────────────────────────
+
+function exportChat(session) {
+  const msgs = session.messages.filter((m) => m.role !== "system");
+  const lines = [
+    `# ${session.name}`,
+    ``,
+    `**Model:** ${session.model || "unknown"}  `,
+    `**Created:** ${new Date(session.createdAt).toLocaleString()}  `,
+    `**Exported:** ${new Date().toLocaleString()}`,
+    ``,
+    `---`,
+    ``,
+  ];
+  for (const msg of msgs) {
+    if (msg.role === "user") {
+      lines.push(`**You:** ${msg.content}`, ``);
+    } else {
+      lines.push(`**AI:** ${msg.content}`, ``);
+    }
+    lines.push(`---`, ``);
+  }
+  const slug = session.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const filename = `gac-export-${slug}-${ts}.md`;
+  const outPath = path.join(os.homedir(), filename);
+  fs.writeFileSync(outPath, lines.join("\n"));
+  return outPath;
+}
+
+// ─────────────────────────────────────────────────────────────────
 // TUI primitives
 // ─────────────────────────────────────────────────────────────────
 
-function inputLine(label) {
+function inputLine(label, defaultVal) {
   return new Promise((resolve) => {
     term(label);
-    term.inputField({ cancelable: true }, (error, val) => {
+    const opts = { cancelable: true };
+    if (defaultVal !== undefined) opts.default = String(defaultVal);
+    term.inputField(opts, (error, val) => {
       term("\n");
       resolve(error || val === undefined || val === null ? "" : val.trim());
     });
@@ -185,6 +264,28 @@ function menuSelect(items, opts = {}) {
       }
     );
   });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// New-chat setup  (custom system prompt)
+// ─────────────────────────────────────────────────────────────────
+
+async function promptNewChatSetup(defaultSystemPrompt) {
+  term.clear();
+  term.bold.cyan("\n New chat\n");
+  term(`${hr()}\n\n`);
+
+  term.dim(" Default system prompt:\n");
+  const preview =
+    defaultSystemPrompt && defaultSystemPrompt.length > 200
+      ? `${defaultSystemPrompt.slice(0, 197)}…`
+      : defaultSystemPrompt || "(none)";
+  term.dim(`   ${preview}\n\n`);
+
+  term(" Enter a custom system prompt, or press Enter to use the default:\n");
+  const custom = await inputLine(" > ");
+
+  return custom || null;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -237,9 +338,7 @@ async function sessionPicker(config) {
     const session = sessions[idx - 1];
     const action = await sessionActionMenu(session);
 
-    if (action === "open") {
-      return { action: "open", session };
-    }
+    if (action === "open") return { action: "open", session };
 
     if (action === "rename") {
       const newName = await inputLine(`  New name [${session.name}]: `);
@@ -263,35 +362,50 @@ async function sessionPicker(config) {
 // ─────────────────────────────────────────────────────────────────
 
 // Returns { action: "exit"|"picker"|"new" }
-async function runChatSession(session, config, systemPrompt) {
-  term.clear();
-  printChatHeader(session, config);
-  term(`${hr()}\n`);
+async function runChatSession(session, config, defaultSystemPrompt) {
+  const effectiveSystemPrompt = session.customSystemPrompt ?? defaultSystemPrompt;
 
-  const isResume = session.messages.filter((m) => m.role !== "system").length > 0;
-  if (isResume) {
-    term.dim(" Resuming conversation\n\n");
-    printHistory(session, config);
-    term(`${hr()}\n\n`);
-  } else {
-    term.dim(' Type "/help" for commands · Ctrl+C to exit\n\n');
-  }
-
-  // Build the live messages array from stored session
+  // Build the live messages array
   const messages = session.messages.length
     ? [...session.messages]
-    : systemPrompt
-    ? [{ role: "system", content: systemPrompt }]
+    : effectiveSystemPrompt
+    ? [{ role: "system", content: effectiveSystemPrompt }]
     : [];
 
-  if (!messages.find((m) => m.role === "system") && systemPrompt) {
-    messages.unshift({ role: "system", content: systemPrompt });
+  if (!messages.find((m) => m.role === "system") && effectiveSystemPrompt) {
+    messages.unshift({ role: "system", content: effectiveSystemPrompt });
     session.messages = [...messages];
   }
 
   const renderer = config.renderMarkdown
     ? createMarkdownRenderer(config.markdownStyles)
     : null;
+
+  // Background title generation state
+  let pendingTitle = null;
+
+  const isResume = session.messages.filter((m) => m.role !== "system").length > 0;
+
+  const drawScreen = () => {
+    term.clear();
+    printChatHeader(session, config);
+    term(`${hr()}\n`);
+    printCommandsHint();
+    term("\n");
+  };
+
+  drawScreen();
+
+  if (isResume) {
+    term.dim(" Resuming conversation\n\n");
+    printHistory(session, config);
+    term(`${hr("─")}\n\n`);
+  }
+
+  // Per-session input history (up/down arrow recall)
+  const inputHistory = session.messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content);
 
   term.grabInput({ mouse: "button" });
   const cleanupInput = () => {
@@ -308,25 +422,55 @@ async function runChatSession(session, config, systemPrompt) {
   term.on("key", onKey);
 
   while (true) {
+    // Apply any background title update before showing the prompt
+    if (pendingTitle) {
+      session.name = pendingTitle;
+      session.autoNamed = true;
+      pendingTitle = null;
+      saveSession(session);
+      // Redraw just the header line in-place would require complex ANSI positioning;
+      // instead print a fresh header block above the prompt.
+      term("\n");
+      printChatHeader(session, config);
+      term(`${hr()}\n`);
+      printCommandsHint();
+      term("\n");
+    }
+
     term.bold.brightBlue("You ▶ ");
     const input = await new Promise((resolve) => {
-      term.inputField({ cancelable: true }, (error, val) => {
-        term("\n");
-        resolve(error || val === undefined || val === null ? "" : val.trim());
-      });
+      term.inputField(
+        { cancelable: true, history: [...inputHistory] },
+        (error, val) => {
+          term("\n");
+          resolve(error || val === undefined || val === null ? "" : val.trim());
+        }
+      );
     });
 
     if (!input) continue;
 
     // ── Built-in commands ──────────────────────────────────────
     if (input === "/help") {
-      term.dim(`\n  Commands:\n`);
-      term.dim(`    /new           Start a new chat\n`);
-      term.dim(`    /sessions      Return to session picker\n`);
-      term.dim(`    /rename        Rename this chat\n`);
-      term.dim(`    /delete        Delete this chat and return to picker\n`);
-      term.dim(`    /clear         Clear history in this chat\n`);
-      term.dim(`    exit / quit    Exit gac chat\n\n`);
+      term(`\n`);
+      term.bold("  Commands\n");
+      term.dim(`  ${"─".repeat(38)}\n`);
+      const cmds = [
+        ["/help",          "Show this list"],
+        ["/new",           "Start a new chat"],
+        ["/sessions",      "Return to session picker"],
+        ["/rename [name]", "Rename this chat"],
+        ["/system",        "View or set the system prompt"],
+        ["/clear",         "Wipe history in this chat"],
+        ["/retry",         "Regenerate the last AI response"],
+        ["/export",        "Save conversation to a Markdown file"],
+        ["exit / quit",    "Exit gac chat"],
+      ];
+      for (const [cmd, desc] of cmds) {
+        term.brightCyan(`    ${cmd.padEnd(22)}`);
+        term.dim(`${desc}\n`);
+      }
+      term("\n");
       continue;
     }
 
@@ -351,10 +495,49 @@ async function runChatSession(session, config, systemPrompt) {
       const newName = inline || (await inputLine(`  New name [${session.name}]: `));
       if (newName) {
         session.name = newName;
+        session.autoNamed = true;
         saveSession(session);
-        term(`\n`);
+        term("\n");
         printChatHeader(session, config);
-        term(`${hr()}\n\n`);
+        term(`${hr()}\n`);
+        printCommandsHint();
+        term("\n");
+      }
+      continue;
+    }
+
+    if (input === "/system" || input.startsWith("/system ")) {
+      const arg = input.startsWith("/system ") ? input.slice(8).trim() : "";
+      if (arg === "reset") {
+        session.customSystemPrompt = null;
+        // Rebuild messages with default prompt
+        const sysIdx = messages.findIndex((m) => m.role === "system");
+        if (defaultSystemPrompt) {
+          if (sysIdx >= 0) messages[sysIdx] = { role: "system", content: defaultSystemPrompt };
+          else messages.unshift({ role: "system", content: defaultSystemPrompt });
+        } else if (sysIdx >= 0) {
+          messages.splice(sysIdx, 1);
+        }
+        session.messages = [...messages];
+        saveSession(session);
+        term.dim("  System prompt reset to default.\n\n");
+      } else if (arg) {
+        session.customSystemPrompt = arg;
+        const sysIdx = messages.findIndex((m) => m.role === "system");
+        if (sysIdx >= 0) messages[sysIdx] = { role: "system", content: arg };
+        else messages.unshift({ role: "system", content: arg });
+        session.messages = [...messages];
+        saveSession(session);
+        term.dim("  System prompt updated.\n\n");
+      } else {
+        // Show current
+        const current =
+          session.customSystemPrompt ?? defaultSystemPrompt ?? "(none)";
+        term(`\n`);
+        term.bold("  System prompt\n");
+        term.dim(`  ${"─".repeat(38)}\n`);
+        term.dim(`  ${current.replace(/\n/g, "\n  ")}\n\n`);
+        term.dim('  To change: /system <new prompt>   To reset: /system reset\n\n');
       }
       continue;
     }
@@ -371,23 +554,64 @@ async function runChatSession(session, config, systemPrompt) {
       messages.length = 0;
       if (sysMsg) messages.push(sysMsg);
       session.messages = [...messages];
+      session.autoNamed = false;
       saveSession(session);
+      inputHistory.length = 0;
       term.dim("  History cleared.\n\n");
+      continue;
+    }
+
+    if (input === "/retry") {
+      const lastAiIdx = messages.map((m) => m.role).lastIndexOf("assistant");
+      if (lastAiIdx === -1) {
+        term.dim("  Nothing to retry.\n\n");
+        continue;
+      }
+      // Remove the last assistant reply so we can regenerate
+      messages.splice(lastAiIdx, 1);
+      session.messages = [...messages];
+      term.dim("  Retrying…\n");
+      term.bold.brightGreen("AI  ◀ ");
+      let retryReply;
+      try {
+        retryReply = await chatCompletion(config, messages);
+      } catch (err) {
+        term.red(`\nError: ${err.message}\n\n`);
+        continue;
+      }
+      if (!config.stream) {
+        if (renderer) {
+          term(renderer.renderText(retryReply));
+        } else {
+          term(retryReply);
+        }
+      }
+      if (config.debugRender) term(`\n--- RAW ---\n${retryReply}\n`);
+      term("\n\n");
+      if (retryReply && retryReply.trim()) {
+        messages.push({ role: "assistant", content: retryReply });
+        session.messages = [...messages];
+        saveSession(session);
+      }
+      continue;
+    }
+
+    if (input === "/export") {
+      try {
+        // Attach model name for export metadata
+        session.model = config.model;
+        const outPath = exportChat(session);
+        term.dim(`  Exported to: `);
+        term.brightCyan(`${outPath}\n\n`);
+      } catch (err) {
+        term.red(`  Export failed: ${err.message}\n\n`);
+      }
       continue;
     }
 
     // ── Regular message ────────────────────────────────────────
     messages.push({ role: "user", content: input });
-
-    // Auto-name from first user message
-    if (
-      messages.filter((m) => m.role === "user").length === 1 &&
-      session.name === "New chat"
-    ) {
-      session.name = input.length > 42 ? `${input.slice(0, 39)}...` : input;
-      printChatHeader(session, config);
-      term(`${hr()}\n\n`);
-    }
+    inputHistory.push(input);
 
     term.bold.brightGreen("AI  ◀ ");
 
@@ -397,6 +621,7 @@ async function runChatSession(session, config, systemPrompt) {
     } catch (err) {
       term.red(`\nError: ${err.message}\n\n`);
       messages.pop();
+      inputHistory.pop();
       continue;
     }
 
@@ -408,9 +633,7 @@ async function runChatSession(session, config, systemPrompt) {
       }
     }
 
-    if (config.debugRender) {
-      term(`\n--- RAW ---\n${reply}\n`);
-    }
+    if (config.debugRender) term(`\n--- RAW ---\n${reply}\n`);
 
     if (!reply || !reply.trim()) {
       term.dim(
@@ -424,6 +647,13 @@ async function runChatSession(session, config, systemPrompt) {
       messages.push({ role: "assistant", content: reply });
       session.messages = [...messages];
       saveSession(session);
+
+      // Fire background title generation after the first exchange
+      if (!session.autoNamed && messages.filter((m) => m.role === "user").length === 1) {
+        generateAiTitle(input, reply, config).then((title) => {
+          if (title) pendingTitle = title;
+        });
+      }
     }
   }
 }
@@ -432,18 +662,18 @@ async function runChatSession(session, config, systemPrompt) {
 // Public entry point
 // ─────────────────────────────────────────────────────────────────
 
-export async function runChat(config, systemPrompt) {
+export async function runChat(config, defaultSystemPrompt) {
   let state = "picker";
   let session = null;
 
   while (true) {
     if (state === "picker") {
       const result = await sessionPicker(config);
-      if (result.action === "exit") {
-        term.processExit(0);
-      }
+      if (result.action === "exit") term.processExit(0);
+
       if (result.action === "new") {
-        session = createSession("New chat");
+        const customPrompt = await promptNewChatSetup(defaultSystemPrompt);
+        session = createSession("New chat", customPrompt);
         saveSession(session);
         state = "chat";
       } else {
@@ -451,12 +681,12 @@ export async function runChat(config, systemPrompt) {
         state = "chat";
       }
     } else {
-      const result = await runChatSession(session, config, systemPrompt);
-      if (result.action === "exit") {
-        term.processExit(0);
-      }
+      const result = await runChatSession(session, config, defaultSystemPrompt);
+      if (result.action === "exit") term.processExit(0);
+
       if (result.action === "new") {
-        session = createSession("New chat");
+        const customPrompt = await promptNewChatSetup(defaultSystemPrompt);
+        session = createSession("New chat", customPrompt);
         saveSession(session);
         // stay in "chat" state
       } else {
