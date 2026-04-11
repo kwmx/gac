@@ -479,13 +479,29 @@ async function ollamaChatCompletion(config, messages) {
   const renderer = config.renderMarkdown
     ? createMarkdownRenderer(config.markdownStyles)
     : null;
-  const response = await fetchCompletion(
-    url,
-    payload,
-    { "Content-Type": "application/json" },
-    "Ollama",
-    timeoutMs
-  );
+
+  const maxRetries = 30;
+  const retryDelayMs = 3000;
+  let response;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    response = await fetchCompletion(
+      url,
+      payload,
+      { "Content-Type": "application/json" },
+      "Ollama",
+      timeoutMs
+    );
+    if (response.status !== 503) break;
+
+    const text = await response.text();
+    if (attempt >= maxRetries) {
+      throw new Error(`Ollama error ${response.status}: ${text}`);
+    }
+    const msg = extract503Message(text);
+    term(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
+    await sleep(retryDelayMs);
+  }
 
   if (!response.ok) {
     await handleError(response, "Ollama");

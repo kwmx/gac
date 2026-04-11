@@ -854,20 +854,22 @@ async function runModels(config) {
   } catch (err) {
     term(`Error: ${err.message}\n`);
     term.processExit(1);
+    return;
   }
 
   if (!models.length) {
     term("No models found from the configured provider.\n");
     term.processExit(0);
+    return;
   }
 
   term("Available models:\n");
-  // Append option to keep current default at the top
-  models.unshift("Keep current default");
   models.forEach((model) => term(`- ${model}\n`));
+  // Prepend selection-only option for the menu (after printing the real list)
+  const menuModels = ["Keep current default", ...models];
   term("\nSelect a default model (use arrows + Enter, Esc to cancel):\n");
 
-  const currentIndex = Math.max(models.indexOf(config.model), 0);
+  const currentIndex = Math.max(menuModels.indexOf(config.model), 0);
   term.grabInput({ mouse: "button" });
   const cleanup = () => {
     term.grabInput(false);
@@ -884,26 +886,26 @@ async function runModels(config) {
 
   await new Promise((resolve) => {
     term.singleColumnMenu(
-      models,
+      menuModels,
       { cancelable: true, selectedIndex: currentIndex },
       (error, response) => {
         term("\n");
+        cleanup();
         if (error || !response || response.canceled) {
-          cleanup();
           term("Selection canceled.\n");
-          term.processExit(0);
+          resolve();
+          return;
         }
-        let selected = models[response.selectedIndex];
+        const selected = menuModels[response.selectedIndex];
         if (selected === "Keep current default") {
-          cleanup();
           term(`Default model unchanged ("${config.model}").\n`);
-          term.processExit(0);
+          resolve();
+          return;
         }
         setConfigValue("model", selected);
         config.model = selected;
-        cleanup();
         term(`Default model set to "${selected}".\n`);
-        term.processExit(0);
+        resolve();
       }
     );
   });
@@ -985,6 +987,7 @@ export async function runCli(argv) {
     if (!prompt) {
       term("Error: missing prompt after -a.\n");
       term.processExit(1);
+      return;
     }
     await runSinglePrompt("ask", prompt, config);
     return;
@@ -995,6 +998,7 @@ export async function runCli(argv) {
     if (!prompt) {
       term(`Error: missing prompt after ${args[0]}.\n`);
       term.processExit(1);
+      return;
     }
     await runSinglePrompt(args[0], prompt, config);
     return;
@@ -1005,6 +1009,7 @@ export async function runCli(argv) {
     if (!prompt) {
       term("Error: missing prompt after runbook.\n");
       term.processExit(1);
+      return;
     }
     await runRunbook(prompt, config);
     return;

@@ -381,9 +381,6 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     ? createMarkdownRenderer(config.markdownStyles)
     : null;
 
-  // Background title generation state
-  let pendingTitle = null;
-
   const isResume = session.messages.filter((m) => m.role !== "system").length > 0;
 
   const drawScreen = () => {
@@ -422,21 +419,6 @@ async function runChatSession(session, config, defaultSystemPrompt) {
   term.on("key", onKey);
 
   while (true) {
-    // Apply any background title update before showing the prompt
-    if (pendingTitle) {
-      session.name = pendingTitle;
-      session.autoNamed = true;
-      pendingTitle = null;
-      saveSession(session);
-      // Redraw just the header line in-place would require complex ANSI positioning;
-      // instead print a fresh header block above the prompt.
-      term("\n");
-      printChatHeader(session, config);
-      term(`${hr()}\n`);
-      printCommandsHint();
-      term("\n");
-    }
-
     term.bold.brightBlue("You ▶ ");
     const input = await new Promise((resolve) => {
       term.inputField(
@@ -648,11 +630,20 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       session.messages = [...messages];
       saveSession(session);
 
-      // Fire background title generation after the first exchange
+      // Generate and apply title after the first exchange (awaited to avoid
+      // concurrent requests to the LLM server, which often handles only one at a time)
       if (!session.autoNamed && messages.filter((m) => m.role === "user").length === 1) {
-        generateAiTitle(input, reply, config).then((title) => {
-          if (title) pendingTitle = title;
-        });
+        const title = await generateAiTitle(input, reply, config);
+        if (title) {
+          session.name = title;
+          session.autoNamed = true;
+          saveSession(session);
+          term("\n");
+          printChatHeader(session, config);
+          term(`${hr()}\n`);
+          printCommandsHint();
+          term("\n");
+        }
       }
     }
   }
@@ -669,7 +660,10 @@ export async function runChat(config, defaultSystemPrompt) {
   while (true) {
     if (state === "picker") {
       const result = await sessionPicker(config);
-      if (result.action === "exit") term.processExit(0);
+      if (result.action === "exit") {
+        term.processExit(0);
+        return;
+      }
 
       if (result.action === "new") {
         const customPrompt = await promptNewChatSetup(defaultSystemPrompt);
@@ -682,7 +676,10 @@ export async function runChat(config, defaultSystemPrompt) {
       }
     } else {
       const result = await runChatSession(session, config, defaultSystemPrompt);
-      if (result.action === "exit") term.processExit(0);
+      if (result.action === "exit") {
+        term.processExit(0);
+        return;
+      }
 
       if (result.action === "new") {
         const customPrompt = await promptNewChatSetup(defaultSystemPrompt);
