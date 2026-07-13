@@ -92,6 +92,11 @@ const FIELDS = [
   },
   { key: "debugRender", label: "Debug Render", prompt: "Debug Render (true/false)" },
   {
+    key: "showThinking",
+    label: "Show Thinking",
+    prompt: "Show model thinking while streaming (true/false)",
+  },
+  {
     key: "detailedSuggest",
     label: "Detailed Suggest",
     prompt: "Detailed Suggest (true/false)",

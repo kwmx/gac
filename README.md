@@ -163,6 +163,7 @@ gac config set detailedContext true
 - `detailedSuggest` (boolean): when `true`, `suggest` mode returns more detailed, step-by-step suggestions.
 - `detailedContext` (boolean): when `true`, `suggest`/`explain` prompts include the current directory and `ls` output.
 - `renderMarkdown` (boolean)
+- `showThinking` (boolean, default `true`): stream the model's `<think>` reasoning as dim text while it thinks, then erase it and show only the answer. Automatically disabled when output is piped.
 
 ### Markdown styling
 

@@ -107,7 +107,8 @@ export function printHelp() {
   term(`  explain <prompt>  Explain a topic with examples\n`);
   term(`  runbook <prompt>  Step-by-step commands with approval gates\n`);
   term(`  commit            Generate a commit message from staged changes\n`);
-  term(`  chat              Interactive chat mode\n`);
+  term(`  chat              Interactive chat mode (""" starts multi-line input;\n`);
+  term(`                    /help inside chat lists all commands)\n`);
   term(`  models            List models and set default\n`);
   term(`  config            View configuration\n`);
   term(`  config tui        Open interactive config editor\n`);
