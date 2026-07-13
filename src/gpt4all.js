@@ -44,6 +44,12 @@ export function getActiveModel(config) {
   return getProvider(config) === "codex" ? resolveCodexModel(config) : config.model;
 }
 
+// The config key model selections should be written to for the active
+// provider — the write-side counterpart of getActiveModel.
+export function getActiveModelKey(config) {
+  return getProvider(config) === "codex" ? "codexModel" : "model";
+}
+
 export function buildOpenAiHeaders(apiKey) {
   const headers = { "Content-Type": "application/json" };
   if (apiKey) {
@@ -613,9 +619,7 @@ export async function chatCompletion(config, messages, options = {}) {
       : await resolveContextWindow(config);
   const budget = resolveGenerationBudget(config, messages, contextWindow);
   if (provider === "codex") {
-    // The Codex backend manages generation limits per plan; the budget only
-    // steered history trimming, which callers already applied.
-    return codexChatCompletion(config, messages);
+    return codexChatCompletion(config, messages, budget);
   }
   if (provider === "ollama") {
     return ollamaChatCompletion(config, messages, budget);

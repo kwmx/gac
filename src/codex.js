@@ -201,22 +201,23 @@ async function parseCodexStream(response, config, { display }) {
     term.dim(chunk);
   };
 
+  let finished = false;
   const finish = () => {
     finishThinkingDisplay();
     flushLineBuffer();
-    return fullText;
+    finished = true;
   };
 
   const handleEvent = (event) => {
     const delta = getCodexTextDelta(event);
     if (delta) {
       onContent(delta);
-      return null;
+      return;
     }
     const reasoning = getCodexReasoningDelta(event);
     if (reasoning) {
       onThinking(reasoning);
-      return null;
+      return;
     }
     if (event.type === "response.failed" || event.type === "error") {
       const message = extractCodexErrorMessage(event) || "response failed";
@@ -230,22 +231,27 @@ async function parseCodexStream(response, config, { display }) {
         const finalText = extractCodexFinalText(event.response);
         if (finalText) onContent(finalText);
       }
-      return finish();
+      finish();
     }
-    return null;
   };
 
   const handlePayload = (payload) => {
-    if (payload === "[DONE]") return finish();
-    try {
-      return handleEvent(JSON.parse(payload));
-    } catch (err) {
-      if (err.message && err.message.startsWith("Codex error:")) throw err;
-      return null; // Ignore non-JSON payloads
+    if (payload === "[DONE]") {
+      finish();
+      return;
     }
+    let event;
+    try {
+      event = JSON.parse(payload);
+    } catch (err) {
+      return; // Ignore non-JSON payloads
+    }
+    // Outside the try: a real failure while handling a parsed event (renderer,
+    // terminal write) must propagate, not be misread as a non-JSON payload.
+    handleEvent(event);
   };
 
-  while (true) {
+  while (!finished) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -256,19 +262,21 @@ async function parseCodexStream(response, config, { display }) {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed || !trimmed.startsWith("data:")) continue;
-      const result = handlePayload(trimmed.replace(/^data:\s*/, ""));
-      if (result !== null && result !== undefined) return result;
+      handlePayload(trimmed.replace(/^data:\s*/, ""));
+      if (finished) return fullText;
     }
   }
 
   // A final event without a trailing newline would otherwise be dropped.
-  const remaining = buffer.trim();
-  if (remaining.startsWith("data:")) {
-    const result = handlePayload(remaining.replace(/^data:\s*/, ""));
-    if (result !== null && result !== undefined) return result;
+  if (!finished) {
+    const remaining = buffer.trim();
+    if (remaining.startsWith("data:")) {
+      handlePayload(remaining.replace(/^data:\s*/, ""));
+    }
   }
 
-  return finish();
+  if (!finished) finish();
+  return fullText;
 }
 
 function buildCodexHeaders(credentials) {
@@ -283,8 +291,15 @@ function buildCodexHeaders(credentials) {
   };
 }
 
-function buildCodexPayload(model, instructions, input) {
-  return {
+// Optional params the backend may reject depending on model/revision. When a
+// 400 names one, it is dropped, remembered for the rest of the process, and
+// the request retried — so a stricter backend costs one extra round trip
+// per process instead of failing outright.
+const OPTIONAL_PARAMS = ["max_output_tokens", "reasoning"];
+const rejectedParams = new Set();
+
+function buildCodexPayload(model, instructions, input, budget) {
+  const payload = {
     model,
     ...(instructions ? { instructions } : {}),
     input,
@@ -297,6 +312,16 @@ function buildCodexPayload(model, instructions, input) {
     include: [],
     prompt_cache_key: sessionId,
   };
+  // Honor the response cap every other provider applies (config.maxTokens,
+  // clamped by the caller). Note: `temperature` is intentionally not sent —
+  // the Codex backend manages sampling and rejects overrides.
+  if (Number(budget?.maxTokens) > 0) {
+    payload.max_output_tokens = Math.floor(Number(budget.maxTokens));
+  }
+  for (const param of rejectedParams) {
+    delete payload[param];
+  }
+  return payload;
 }
 
 async function fetchCodex(url, payload, headers, timeoutMs) {
@@ -335,14 +360,14 @@ async function codexHttpError(response, text) {
   return new Error(`Codex error ${response.status}: ${message}`);
 }
 
-export async function codexChatCompletion(config, messages) {
+export async function codexChatCompletion(config, messages, budget) {
   let credentials = await getCodexCredentials();
   const model = resolveCodexModel(config);
   const url = `${normalizeCodexBaseUrl(config.codexBaseUrl)}/responses`;
   const timeoutMs = Number(config.requestTimeoutMs);
   const { instructions, input } = convertMessagesToCodexInput(messages);
 
-  let payload = buildCodexPayload(model, instructions, input);
+  let payload = buildCodexPayload(model, instructions, input, budget);
   let headers = buildCodexHeaders(credentials);
 
   const maxRetries = 5;
@@ -366,24 +391,37 @@ export async function codexChatCompletion(config, messages) {
       continue;
     }
 
-    // Some backend revisions only accept their own instructions block; retry
-    // once carrying the system prompt as a regular input message instead.
-    if (response.status === 400 && payload.instructions && /instruction/i.test(text)) {
-      const merged = [
-        {
-          type: "message",
-          role: "user",
-          content: [
-            { type: "input_text", text: `[System instructions]\n${payload.instructions}` },
-          ],
-        },
-        ...input,
-      ];
-      payload = buildCodexPayload(model, null, merged);
-      continue;
+    if (response.status === 400) {
+      // A 400 naming an optional param means this backend/model rejects it:
+      // drop it for the rest of the process and retry without.
+      const rejected = OPTIONAL_PARAMS.find(
+        (param) => param in payload && text.includes(param)
+      );
+      if (rejected) {
+        rejectedParams.add(rejected);
+        delete payload[rejected];
+        continue;
+      }
+
+      // Some backend revisions only accept their own instructions block; retry
+      // once carrying the system prompt as a regular input message instead.
+      if (payload.instructions && /instruction/i.test(text)) {
+        const merged = [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: `[System instructions]\n${payload.instructions}` },
+            ],
+          },
+          ...input,
+        ];
+        payload = buildCodexPayload(model, null, merged, budget);
+        continue;
+      }
     }
 
-    if ((response.status === 503 || response.status >= 500) && attempt < maxRetries) {
+    if (response.status >= 500 && attempt < maxRetries) {
       notify(
         `Codex unavailable (${response.status}), retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`
       );

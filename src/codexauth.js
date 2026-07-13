@@ -200,22 +200,40 @@ async function refreshCodexAuth(auth, source) {
     // Codex CLI (and vice versa).
     saveAuthFile(source, updated);
   } catch (err) {
-    // Read-only auth file: keep going with the in-memory tokens.
+    // Keep going with the in-memory tokens, but say so: the file now holds a
+    // rotated-away refresh token, so later runs may need a fresh login.
+    process.stderr.write(
+      `Warning: could not update ${source} after a token refresh (${err.message}). ` +
+        "If sign-in stops working, run `gac auth login`.\n"
+    );
   }
   return updated;
 }
 
+// Refreshed tokens are kept in memory so a failed write-back (read-only auth
+// file) doesn't force a network refresh on every request in this process.
+let refreshedAuthCache = null;
+
 // Resolve a usable access token + account id, refreshing when needed.
-export async function getCodexCredentials({ forceRefresh = false, paths } = {}) {
-  const loaded = loadCodexAuth(paths);
+export async function getCodexCredentials({ forceRefresh = false } = {}) {
+  const loaded = loadCodexAuth();
   if (!loaded) {
     throw new Error(
       "Not signed in to ChatGPT. Run `gac auth login` to connect your plan."
     );
   }
   let { auth, source } = loaded;
+  if (
+    refreshedAuthCache &&
+    refreshedAuthCache.source === source &&
+    Date.parse(refreshedAuthCache.auth.last_refresh || "") >
+      (Date.parse(auth.last_refresh || "") || 0)
+  ) {
+    auth = refreshedAuthCache.auth;
+  }
   if (forceRefresh || shouldRefreshAccessToken(auth)) {
     auth = await refreshCodexAuth(auth, source);
+    refreshedAuthCache = { source, auth };
   }
   const accountId = extractAccountId(auth.tokens);
   if (!auth.tokens.access_token || !accountId) {
@@ -262,28 +280,34 @@ function waitForCallback(server, expectedState) {
     timeoutId.unref?.();
 
     server.on("request", (req, res) => {
+      // Close each connection after responding so server.close() doesn't wait
+      // out the browser's keep-alive timeout after a successful login.
+      res.setHeader("Connection", "close");
       const url = new URL(req.url, `http://localhost:${CODEX_REDIRECT_PORT}`);
       if (url.pathname !== "/auth/callback") {
         res.writeHead(404).end();
         return;
       }
-      const fail = (message) => {
+      // Stray hits on this well-known port (stale tabs from an earlier
+      // attempt, port scanners) get a 400 and the server keeps waiting for
+      // the real redirect — only a genuine denial aborts the login.
+      if (url.searchParams.get("state") !== expectedState) {
+        res.writeHead(400, { "Content-Type": "text/plain" }).end("State mismatch.");
+        return;
+      }
+      const error = url.searchParams.get("error");
+      if (error) {
+        const message = `Login failed: ${url.searchParams.get("error_description") || error}`;
         res.writeHead(400, { "Content-Type": "text/plain" }).end(message);
         clearTimeout(timeoutId);
         reject(new Error(message));
-      };
-      const error = url.searchParams.get("error");
-      if (error) {
-        fail(`Login failed: ${url.searchParams.get("error_description") || error}`);
-        return;
-      }
-      if (url.searchParams.get("state") !== expectedState) {
-        fail("Login failed: state mismatch. Try again.");
         return;
       }
       const code = url.searchParams.get("code");
       if (!code) {
-        fail("Login failed: no authorization code in the callback.");
+        res
+          .writeHead(400, { "Content-Type": "text/plain" })
+          .end("Missing authorization code.");
         return;
       }
       res.writeHead(200, { "Content-Type": "text/html" }).end(CALLBACK_PAGE);
@@ -344,6 +368,9 @@ export async function loginCodex({ notify = () => {}, browser = true } = {}) {
     return codexAuthStatus();
   } finally {
     server.close();
+    // Node 18: close() alone leaves the browser's keep-alive socket open,
+    // which would keep the process alive after "Signed in".
+    server.closeAllConnections?.();
   }
 }
 
@@ -355,7 +382,11 @@ export function logoutCodex(paths = {}) {
     fs.unlinkSync(gacPath);
     removed = true;
   } catch (err) {
-    // Nothing stored — that's fine.
+    // Only "nothing stored" is fine; an EACCES/EPERM must not be reported as
+    // signed out while the credentials still work.
+    if (err.code !== "ENOENT") {
+      throw new Error(`Could not remove ${gacPath}: ${err.message}`);
+    }
   }
   return { removed, codexCliAuthPresent: Boolean(readAuthFile(cliPath)) };
 }

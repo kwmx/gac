@@ -1,6 +1,6 @@
 import terminalKit from "terminal-kit";
 import process from "process";
-import { chatCompletion, listModels, getActiveModel } from "./gpt4all.js";
+import { chatCompletion, listModels, getActiveModel, getActiveModelKey } from "./gpt4all.js";
 import { getConfigPath, loadConfig, setConfigValue, getConfigValue } from "./config.js";
 import { loginCodex, logoutCodex, codexAuthStatus } from "./codexauth.js";
 import { maskApiKey } from "./configtui.js";
@@ -117,7 +117,7 @@ async function runModels(config, interactive) {
   term("\nSelect a default model (use arrows + Enter, Esc to cancel):\n");
 
   // Codex keeps its default in `codexModel` so provider switches stay free.
-  const modelKey = config.provider === "codex" ? "codexModel" : "model";
+  const modelKey = getActiveModelKey(config);
   const activeModel = getActiveModel(config);
   const currentIndex = Math.max(menuModels.indexOf(activeModel), 0);
   term.grabInput({ mouse: "button" });
@@ -205,9 +205,16 @@ async function runAuthCommand(args, config) {
   }
 
   if (sub === "logout") {
-    const { removed, codexCliAuthPresent } = logoutCodex();
-    term(removed ? "Signed out of ChatGPT.\n" : "No gac ChatGPT credentials were stored.\n");
-    if (codexCliAuthPresent) {
+    let result;
+    try {
+      result = logoutCodex();
+    } catch (err) {
+      term(`Error: ${err.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    term(result.removed ? "Signed out of ChatGPT.\n" : "No gac ChatGPT credentials were stored.\n");
+    if (result.codexCliAuthPresent) {
       term(
         "Note: a Codex CLI login (~/.codex/auth.json) is still present and will be reused. Run `codex logout` to remove it too.\n"
       );

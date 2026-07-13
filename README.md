@@ -172,6 +172,7 @@ gac ask "how do I list open ports?"
 - The Codex provider has its own model setting (`codexModel`, default `gpt-5.1-codex`), so you can switch between `openai`, `ollama`, and `codex` freely without breaking either setup. `gac models` and `/model` in chat edit the right one for the active provider.
 - On a remote/SSH machine, forward the OAuth callback port before `gac auth login`: `ssh -L 1455:localhost:1455 <host>`.
 - The Codex backend only streams; with `stream: false` gac simply buffers the stream and prints the finished reply.
+- `maxTokens` is honored (sent as `max_output_tokens`; on reasoning models it includes reasoning tokens, so very small caps can cut answers short). `temperature` is not sent — the Codex backend manages sampling.
 - Usage counts against your ChatGPT plan's limits; when a limit is hit the API returns an error and gac reports when it resets.
 
 ## Configuration

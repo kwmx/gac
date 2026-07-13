@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { chatCompletion, listModels, getActiveModel } from "./gpt4all.js";
+import { chatCompletion, listModels, getActiveModel, getActiveModelKey } from "./gpt4all.js";
 import { createMarkdownRenderer } from "./markdown.js";
 import { copyToClipboard, extractLastCodeBlock } from "./tui.js";
 import {
@@ -577,8 +577,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       );
       if (idx === null) continue;
       // Codex keeps its own model key so provider switches stay independent.
-      if (config.provider === "codex") config.codexModel = models[idx];
-      else config.model = models[idx];
+      config[getActiveModelKey(config)] = models[idx];
       // The new model may have a different context window.
       contextWindow = await resolveContextWindow(config);
       term.dim(
