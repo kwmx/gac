@@ -113,3 +113,31 @@ test("resolveGenerationBudget sizes num_ctx to the conversation", () => {
   assert.ok(budget.numCtx < 131072);
   assert.equal(budget.maxTokens, 1024);
 });
+
+test("resolveGenerationBudget never raises a deliberately small maxTokens", () => {
+  // Chat title generation uses maxTokens: 12; the response floor must not
+  // silently turn that into 128.
+  const budget = resolveGenerationBudget(
+    { maxTokens: 12 },
+    [{ role: "user", content: "hi" }],
+    8192
+  );
+  assert.equal(budget.maxTokens, 12);
+});
+
+test("resolveGenerationBudget quantizes num_ctx so it stays stable across turns", () => {
+  // Ollama reloads the model when num_ctx changes; growing prompts must land
+  // on the same power-of-two step, not a new value every message.
+  const turnA = resolveGenerationBudget(
+    { maxTokens: 2048 },
+    [{ role: "user", content: "x".repeat(17000) }],
+    32768
+  );
+  const turnB = resolveGenerationBudget(
+    { maxTokens: 2048 },
+    [{ role: "user", content: "x".repeat(18000) }],
+    32768
+  );
+  assert.equal(turnA.numCtx, turnB.numCtx);
+  assert.equal(turnA.numCtx % 4096, 0, "num_ctx sits on a quantized step");
+});

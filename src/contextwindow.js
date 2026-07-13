@@ -1,4 +1,11 @@
-import { normalizeOpenAiBaseUrl, normalizeOllamaBaseUrl } from "./gpt4all.js";
+import fs from "fs";
+import path from "path";
+import {
+  normalizeOpenAiBaseUrl,
+  normalizeOllamaBaseUrl,
+  buildOpenAiHeaders,
+} from "./gpt4all.js";
+import { getConfigPath } from "./config.js";
 
 // Used when the backend does not report a context length and the user has not
 // configured one. Most current local models handle at least 8k tokens.
@@ -7,8 +14,13 @@ export const FALLBACK_CONTEXT_TOKENS = 8192;
 export const TRIM_MARGIN_TOKENS = 256;
 const RESPONSE_MARGIN_TOKENS = 64;
 const MIN_RESPONSE_TOKENS = 128;
-const DETECT_TIMEOUT_MS = 5000;
+const DETECT_TIMEOUT_MS = 2500;
 const OLLAMA_DEFAULT_NUM_CTX = 4096;
+// Detection results are persisted so one-shot CLI invocations don't re-probe
+// the backend every time. Failures get a short TTL so a backend that comes up
+// later is retried soon.
+const DISK_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DISK_CACHE_FAILURE_TTL_MS = 10 * 60 * 1000;
 
 // Rough heuristic (~4 chars per token). Estimates only steer trimming and
 // num_ctx sizing, so being slightly conservative is fine.
@@ -79,6 +91,38 @@ function detectionKey(config) {
   return `${provider}|${base}|${config.model}`;
 }
 
+function diskCachePath() {
+  return path.join(path.dirname(getConfigPath()), "context-cache.json");
+}
+
+function readDiskCache() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(diskCachePath(), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function readDiskCacheEntry(key) {
+  const entry = readDiskCache()[key];
+  if (!entry || typeof entry !== "object") return undefined;
+  const age = Date.now() - Number(entry.ts || 0);
+  const ttl = entry.value === null ? DISK_CACHE_FAILURE_TTL_MS : DISK_CACHE_TTL_MS;
+  if (!(age >= 0 && age < ttl)) return undefined;
+  return entry.value;
+}
+
+function writeDiskCacheEntry(key, value) {
+  try {
+    const cache = readDiskCache();
+    cache[key] = { value, ts: Date.now() };
+    fs.writeFileSync(diskCachePath(), JSON.stringify(cache, null, 2));
+  } catch (err) {
+    // Best-effort: a read-only config dir just means we re-probe next run.
+  }
+}
+
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DETECT_TIMEOUT_MS);
@@ -90,11 +134,18 @@ async function fetchWithTimeout(url, options) {
 }
 
 // Ask the backend how large the model's context window is. Best-effort: any
-// failure (endpoint missing, timeout, unexpected shape) resolves to null and
-// is cached so we only probe once per provider/model per process.
+// failure (endpoint missing, timeout, unexpected shape) resolves to null.
+// Results are cached in-process and on disk (gac is a one-shot CLI, so the
+// disk cache is what actually prevents a probe per invocation).
 export async function detectContextWindow(config) {
   const key = detectionKey(config);
   if (detectionCache.has(key)) return detectionCache.get(key);
+
+  const cached = readDiskCacheEntry(key);
+  if (cached !== undefined) {
+    detectionCache.set(key, cached);
+    return cached;
+  }
 
   let detected = null;
   try {
@@ -110,10 +161,11 @@ export async function detectContextWindow(config) {
         detected = pickOllamaContextLength(await response.json());
       }
     } else {
-      const headers = { "Content-Type": "application/json" };
-      if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
       const url = `${normalizeOpenAiBaseUrl(config.baseUrl)}/models`;
-      const response = await fetchWithTimeout(url, { method: "GET", headers });
+      const response = await fetchWithTimeout(url, {
+        method: "GET",
+        headers: buildOpenAiHeaders(config.apiKey),
+      });
       if (response.ok) {
         const json = await response.json();
         const entries = Array.isArray(json?.data) ? json.data : [];
@@ -126,24 +178,23 @@ export async function detectContextWindow(config) {
   }
 
   detectionCache.set(key, detected);
+  writeDiskCacheEntry(key, detected);
   return detected;
 }
 
-export function clearContextWindowCache() {
-  detectionCache.clear();
-}
-
 // Resolve the context window to plan around: an explicit numeric config value
-// wins; "auto" (the default) probes the backend; anything else means unknown.
+// wins (numeric strings from hand-edited configs are coerced); "auto" (the
+// default) probes the backend; anything else falls back to auto-detection so
+// a typo degrades gracefully instead of silently disabling the feature.
 export async function resolveContextWindow(config) {
   const configured = config?.contextWindow;
-  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
-    return Math.floor(configured);
+  if (configured !== "auto" && configured !== undefined && configured !== null) {
+    const numeric = Number(configured);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return Math.floor(numeric);
+    }
   }
-  if (configured === "auto" || configured === undefined || configured === null) {
-    return detectContextWindow(config);
-  }
-  return null;
+  return detectContextWindow(config);
 }
 
 // Tokens available for the prompt once the response reservation is taken out.
@@ -185,10 +236,19 @@ export function resolveGenerationBudget(config, messages, contextWindow) {
   }
   const promptTokens = estimateMessagesTokens(messages);
   const available = contextWindow - promptTokens - RESPONSE_MARGIN_TOKENS;
-  const maxTokens = Math.max(MIN_RESPONSE_TOKENS, Math.min(configured, available));
-  const numCtx = Math.min(
-    contextWindow,
-    Math.max(OLLAMA_DEFAULT_NUM_CTX, promptTokens + maxTokens + TRIM_MARGIN_TOKENS)
+  // The floor never raises a deliberately small configured cap (e.g. the
+  // 12-token budget used for chat title generation).
+  const floor = Math.min(configured, MIN_RESPONSE_TOKENS);
+  const maxTokens = Math.max(floor, Math.min(configured, available));
+  // Quantize num_ctx to power-of-two steps: Ollama reloads the model whenever
+  // num_ctx changes, so tracking the exact prompt size would force a reload
+  // on every chat turn. Doubling steps keep it stable for long stretches.
+  const needed = Math.max(
+    OLLAMA_DEFAULT_NUM_CTX,
+    promptTokens + maxTokens + TRIM_MARGIN_TOKENS
   );
+  let quantized = OLLAMA_DEFAULT_NUM_CTX;
+  while (quantized < needed) quantized *= 2;
+  const numCtx = Math.min(contextWindow, quantized);
   return { maxTokens, numCtx };
 }

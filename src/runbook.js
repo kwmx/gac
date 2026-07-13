@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { buildRunbookContext } from "./sysinfo.js";
-import { attachInputToPrompt, formatFileContexts } from "./input.js";
+import { attachInputToPrompt, formatFileContexts, truncateForContext } from "./input.js";
 import {
   resolveContextWindow,
   contextBudget,
@@ -288,9 +288,11 @@ function runShellCommand(session, command) {
 // `cd` needs special handling on Windows because each step runs in its own
 // cmd.exe process, so directory changes would not stick otherwise.
 export function parseWindowsCdTarget(command) {
-  const match = String(command || "")
-    .trim()
-    .match(/^cd(?:\s+\/d)?(?:\s+(.+))?$/i);
+  const trimmed = String(command || "").trim();
+  // Compound or redirected commands (cd x && ..., cd x > out) must run in the
+  // real shell; only a bare cd is simulated in-process for cwd persistence.
+  if (/[&|<>]/.test(trimmed)) return null;
+  const match = trimmed.match(/^cd(?:\s+\/d)?(?:\s+(.+))?$/i);
   if (!match) return null;
   let target = (match[1] || "").trim();
   if (
@@ -474,9 +476,9 @@ async function requestRunbookPlan(prompt, config, opts) {
 
   let userPrompt = prompt;
   if (opts.piped) {
-    const pipedBudget = Math.floor(budgetChars / 2);
-    const piped =
-      opts.piped.length > pipedBudget ? opts.piped.slice(0, pipedBudget) : opts.piped;
+    // Head+tail truncation, same as ask/explain — the end of a log is
+    // usually where the error is.
+    const { text: piped } = truncateForContext(opts.piped, Math.floor(budgetChars / 2));
     userPrompt = attachInputToPrompt(prompt, piped);
   }
 

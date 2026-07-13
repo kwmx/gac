@@ -34,12 +34,22 @@ function getProvider(config) {
   return config.provider === "ollama" ? "ollama" : "openai";
 }
 
-function buildOpenAiHeaders(apiKey) {
+export function buildOpenAiHeaders(apiKey) {
   const headers = { "Content-Type": "application/json" };
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
   }
   return headers;
+}
+
+// Progress/status notices go to stderr when stdout is piped, so they never
+// pollute machine-readable output (`gac ask ... | jq`).
+function notify(message) {
+  if (process.stdout.isTTY) {
+    term(message);
+  } else {
+    process.stderr.write(message);
+  }
 }
 
 function createTimeoutController(timeoutMs) {
@@ -388,7 +398,7 @@ async function fetchJson(url, payload, errorLabel, timeoutMs) {
     const text = await response.text();
     if (response.status === 503 && attempt < maxRetries) {
       const msg = extract503Message(text);
-      term(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
+      notify(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
       await sleep(retryDelayMs);
       continue;
     }
@@ -473,7 +483,7 @@ async function openAiChatCompletion(config, messages, budget) {
       throw new Error(`OpenAI error ${response.status}: ${text}`);
     }
     const msg = extract503Message(text);
-    term(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
+    notify(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
     await sleep(retryDelayMs);
   }
 
@@ -562,7 +572,7 @@ async function ollamaChatCompletion(config, messages, budget) {
       throw new Error(`Ollama error ${response.status}: ${text}`);
     }
     const msg = extract503Message(text);
-    term(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
+    notify(`${msg}, retrying in ${retryDelayMs / 1000}s... (${attempt + 1}/${maxRetries})\n`);
     await sleep(retryDelayMs);
   }
 

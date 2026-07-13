@@ -116,12 +116,19 @@ function editInEditor(message) {
   fs.writeFileSync(tmpFile, message);
   try {
     // Editors need the real terminal; run synchronously with inherited stdio.
-    const result = spawnSync(editor, [tmpFile], { stdio: "inherit", shell: true });
+    // The command-string form (with a quoted path) lets $EDITOR carry its own
+    // arguments ("code --wait") while surviving tmpdir paths with spaces.
+    const result = spawnSync(`${editor} "${tmpFile}"`, {
+      stdio: "inherit",
+      shell: true,
+    });
     if (result.error) {
       term.red(`Could not launch editor "${editor}": ${result.error.message}\n`);
       return message;
     }
-    const edited = cleanCommitMessage(fs.readFileSync(tmpFile, "utf8"));
+    // The human's text is intentional — normalize whitespace only, never run
+    // the model-output sanitizer over it.
+    const edited = fs.readFileSync(tmpFile, "utf8").replace(/\r\n/g, "\n").trim();
     return edited || message;
   } finally {
     try {
@@ -161,25 +168,24 @@ export async function runCommit(config, opts = {}) {
 
   let diff;
   let stat;
+  let recentLog;
   try {
-    diff = await git(["diff", "--staged"]);
-    stat = await git(["diff", "--staged", "--stat"]);
+    [diff, stat, recentLog] = await Promise.all([
+      git(["diff", "--staged"]),
+      git(["diff", "--staged", "--stat"]),
+      // A brand-new repo has no history; style context is optional.
+      git(["log", "--oneline", "--no-decorate", "-5"]).catch(() => ""),
+    ]);
   } catch (err) {
     term.red(`Failed to read staged changes: ${err.message}\n`);
     process.exitCode = 1;
     return;
   }
+  recentLog = recentLog.trim();
 
   if (!diff.trim()) {
     term("No staged changes. Stage files with `git add` first.\n");
     return;
-  }
-
-  let recentLog = "";
-  try {
-    recentLog = (await git(["log", "--oneline", "--no-decorate", "-5"])).trim();
-  } catch (err) {
-    // A brand-new repo has no history; style context is optional.
   }
 
   const contextWindow = await resolveContextWindow(config);
@@ -191,7 +197,13 @@ export async function runCommit(config, opts = {}) {
   );
   const promptText = buildCommitUserPrompt({ stat, diff, recentLog }, maxDiffChars);
 
-  term.dim("Generating commit message...\n");
+  // Progress goes to stderr when stdout is piped so `gac commit > msg.txt`
+  // captures only the message itself.
+  if (process.stdout.isTTY) {
+    term.dim("Generating commit message...\n");
+  } else {
+    process.stderr.write("Generating commit message...\n");
+  }
   let message = await generateCommitMessage(config, promptText, contextWindow);
   if (!message) {
     term("The model returned an empty commit message. Try again.\n");

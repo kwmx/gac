@@ -49,6 +49,8 @@ echo "how do I list open ports" | gac
 
 When gac's output is piped or redirected, it automatically switches to plain text (no colors, no markdown styling), so it composes with `less`, `grep`, files, and scripts.
 
+Note: piped input is read until the producer closes the pipe, so don't pipe endless streams (`tail -f ... | gac` will wait forever — use `tail -n 50` instead).
+
 ### File context
 
 Include files as context with `-f`/`--file` (repeatable):
@@ -115,7 +117,7 @@ Exit chat with `exit`, `quit`, or Ctrl+C. Start a line with `"""` to enter multi
 
 Long conversations are automatically trimmed to fit the model's context window — the full history stays saved in the session; only the request to the model drops the oldest turns (a notice is shown when that happens).
 
-Flags:
+Flags (place them before the prompt — once the prompt starts, tokens like `-f` are treated as prompt text, so `gac ask what does -f mean in tar` works):
 
 - `-f, --file <path>` include a file as context (repeatable).
 - `-d, --detailed-suggest` enable more detailed, step-by-step suggestions in `suggest` mode (can also be set via config key `detailedSuggest`).

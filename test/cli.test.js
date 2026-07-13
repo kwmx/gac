@@ -26,12 +26,31 @@ function parse(...args) {
   return parseArgs(["node", "gac", ...args]);
 }
 
-test("parseArgs extracts boolean flags anywhere in the arg list", () => {
-  const { flags, positional, errors } = parse("suggest", "-d", "how do I x", "--no-render");
+test("parseArgs extracts flags before the prompt", () => {
+  const { flags, positional, errors } = parse("suggest", "-d", "--no-render", "how do I x");
   assert.equal(flags.detailedSuggest, true);
   assert.equal(flags.noRender, true);
   assert.deepEqual(positional, ["suggest", "how do I x"]);
   assert.deepEqual(errors, []);
+});
+
+test("parseArgs leaves flag-like tokens inside the prompt untouched", () => {
+  // Once the prompt has started, nothing is treated as a flag anymore.
+  const fileLike = parse("ask", "what", "does", "-f", "mean", "in", "tar");
+  assert.deepEqual(fileLike.flags.files, []);
+  assert.deepEqual(fileLike.positional, ["ask", "what", "does", "-f", "mean", "in", "tar"]);
+  assert.deepEqual(fileLike.errors, []);
+
+  const versionLike = parse("ask", "is", "-V", "a", "common", "flag");
+  assert.equal(versionLike.flags.version, false);
+
+  const doubleDash = parse("ask", "what", "does", "--verbose", "mean");
+  assert.deepEqual(doubleDash.errors, []);
+  assert.ok(doubleDash.positional.includes("--verbose"));
+});
+
+test("parseArgs keeps the legacy --detailed-cont alias working", () => {
+  assert.equal(parse("--detailed-cont", "suggest", "install nginx").flags.detailedContext, true);
 });
 
 test("parseArgs handles valued flags in both forms", () => {

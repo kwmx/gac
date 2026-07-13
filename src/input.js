@@ -55,6 +55,26 @@ export function attachInputToPrompt(prompt, pipedText) {
   return `${cleanPrompt}\n\nInput:\n${fence}\n${piped}\n${fence}`;
 }
 
+// Only this much of an oversized file is ever read into memory; truncation
+// would discard the middle anyway.
+const MAX_FILE_READ_BYTES = 8_000_000;
+
+function readFileHeadTail(resolved, size) {
+  const headBytes = Math.floor(MAX_FILE_READ_BYTES * 0.75);
+  const tailBytes = MAX_FILE_READ_BYTES - headBytes;
+  const fd = fs.openSync(resolved, "r");
+  try {
+    const head = Buffer.alloc(headBytes);
+    fs.readSync(fd, head, 0, headBytes, 0);
+    const tail = Buffer.alloc(tailBytes);
+    fs.readSync(fd, tail, 0, tailBytes, size - tailBytes);
+    const dropped = size - headBytes - tailBytes;
+    return `${head.toString("utf8")}\n[... ${dropped} bytes truncated ...]\n${tail.toString("utf8")}`;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // Read -f/--file paths. Missing/unreadable files come back as errors so the
 // CLI can refuse to silently send a prompt missing half its context.
 export function readFileContexts(paths) {
@@ -68,7 +88,10 @@ export function readFileContexts(paths) {
         errors.push(`--file ${filePath}: is a directory`);
         continue;
       }
-      const content = fs.readFileSync(resolved, "utf8");
+      const content =
+        stat.size > MAX_FILE_READ_BYTES
+          ? readFileHeadTail(resolved, stat.size)
+          : fs.readFileSync(resolved, "utf8");
       files.push({ path: filePath, content });
     } catch (err) {
       errors.push(`--file ${filePath}: ${err.message}`);

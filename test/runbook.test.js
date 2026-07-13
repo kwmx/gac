@@ -114,3 +114,10 @@ test("parseWindowsCdTarget recognizes cd variants", () => {
   assert.deepEqual(parseWindowsCdTarget("CD /d C:\\Users"), { target: "C:\\Users" });
   assert.deepEqual(parseWindowsCdTarget('cd "My Documents"'), { target: "My Documents" });
 });
+
+test("parseWindowsCdTarget leaves compound commands to the real shell", () => {
+  // `cd x && npm install` must run via cmd.exe, not be treated as a path.
+  assert.equal(parseWindowsCdTarget("cd myapp && npm install"), null);
+  assert.equal(parseWindowsCdTarget("cd out > log.txt"), null);
+  assert.equal(parseWindowsCdTarget("cd a | b"), null);
+});

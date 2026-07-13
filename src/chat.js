@@ -440,8 +440,9 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     });
 
     // Multi-line input: a line starting with """ collects lines verbatim
-    // until a closing """ on its own line.
-    if (input.startsWith('"""')) {
+    // until a closing """ on its own line. A line that already contains its
+    // own closing """ is an ordinary message and is sent as-is.
+    if (input.startsWith('"""') && !input.slice(3).includes('"""')) {
       const first = input.slice(3).trim();
       const collected = first ? [first] : [];
       term.dim('  Multi-line input — finish with """ on its own line.\n');
@@ -617,6 +618,13 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         messages.push({ role: "assistant", content: retryReply });
         session.messages = [...messages];
         saveSession(session);
+      } else {
+        // An empty regeneration must not destroy the answer it was meant to
+        // replace — put the previous reply back.
+        messages.splice(lastAiIdx, 0, previousReply);
+        session.messages = [...messages];
+        saveSession(session);
+        term.dim("  Retry returned nothing; keeping the previous reply.\n\n");
       }
       continue;
     }

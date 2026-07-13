@@ -22,12 +22,26 @@ const BOOLEAN_FLAGS = {
   "-d": "detailedSuggest",
   "--detailed-suggest": "detailedSuggest",
   "--detailed-context": "detailedContext",
+  // Legacy alias kept so pre-1.4 scripts don't hard-error.
+  "--detailed-cont": "detailedContext",
   "--dry-run": "dryRun",
   "-h": "help",
   "--help": "help",
   "-V": "version",
   "--version": "version",
 };
+
+const COMMANDS = new Set([
+  "ask",
+  "suggest",
+  "explain",
+  "runbook",
+  "chat",
+  "models",
+  "config",
+  "commit",
+  "-a",
+]);
 
 const VALUED_FLAGS = {
   "--export": "exportPath",
@@ -53,47 +67,55 @@ export function parseArgs(argv) {
   };
   const positional = [];
   const errors = [];
+  // Flags are only recognized before the prompt begins: right after `gac`
+  // and right after a known subcommand. Once the first prompt word appears,
+  // every later token is prompt text, so unquoted prompts like
+  // `gac ask what does -f mean in tar` reach the model intact.
+  let promptStarted = false;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
 
-    if (BOOLEAN_FLAGS[arg]) {
-      flags[BOOLEAN_FLAGS[arg]] = true;
-      continue;
-    }
-
-    // Valued flags: --export path, --export=path, -f path, --file=path
-    const eqIndex = arg.startsWith("--") ? arg.indexOf("=") : -1;
-    const flagName = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
-    if (VALUED_FLAGS[flagName]) {
-      let value;
-      if (eqIndex !== -1) {
-        value = arg.slice(eqIndex + 1);
-      } else {
-        value = args[i + 1];
-        i += 1;
-      }
-      if (value === undefined || value === "") {
-        errors.push(`Flag ${flagName} requires a value.`);
+    if (!promptStarted) {
+      if (BOOLEAN_FLAGS[arg]) {
+        flags[BOOLEAN_FLAGS[arg]] = true;
         continue;
       }
-      const key = VALUED_FLAGS[flagName];
-      if (REPEATABLE.has(key)) {
-        flags[key].push(value);
-      } else {
-        flags[key] = value;
+
+      // Valued flags: --export path, --export=path, -f path, --file=path
+      const eqIndex = arg.startsWith("--") ? arg.indexOf("=") : -1;
+      const flagName = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
+      if (VALUED_FLAGS[flagName]) {
+        let value;
+        if (eqIndex !== -1) {
+          value = arg.slice(eqIndex + 1);
+        } else {
+          value = args[i + 1];
+          i += 1;
+        }
+        if (value === undefined || value === "") {
+          errors.push(`Flag ${flagName} requires a value.`);
+          continue;
+        }
+        const key = VALUED_FLAGS[flagName];
+        if (REPEATABLE.has(key)) {
+          flags[key].push(value);
+        } else {
+          flags[key] = value;
+        }
+        continue;
       }
-      continue;
+
+      if (arg.startsWith("--")) {
+        errors.push(`Unknown flag: ${arg}`);
+        continue;
+      }
     }
 
-    if (arg.startsWith("--")) {
-      errors.push(`Unknown flag: ${arg}`);
-      continue;
-    }
-
-    // Single-dash tokens that are not known flags are kept as prompt text so
-    // things like `gac ask what does -v mean` keep working.
     positional.push(arg);
+    if (!promptStarted) {
+      promptStarted = positional.length >= 2 || !COMMANDS.has(arg);
+    }
   }
 
   return { flags, positional, errors };
@@ -115,7 +137,7 @@ export function printHelp() {
   term(`  config get <key>  Print one config value\n`);
   term(`  config set <key> <value>  Update one config value\n`);
   term(`\n`);
-  term(`Flags:\n`);
+  term(`Flags (place before the prompt; later tokens are prompt text):\n`);
   term(`  -f, --file <path>       Include a file as context (repeatable)\n`);
   term(`  -d, --detailed-suggest  More detailed, step-by-step suggestions\n`);
   term(`  --detailed-context      Include current directory listing as context\n`);
