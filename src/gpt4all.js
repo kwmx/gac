@@ -1,6 +1,7 @@
 import terminalKit from "terminal-kit";
 import { createMarkdownRenderer } from "./markdown.js";
 import { resolveContextWindow, resolveGenerationBudget } from "./contextwindow.js";
+import { codexChatCompletion, listCodexModels, resolveCodexModel } from "./codex.js";
 
 const { terminal: term } = terminalKit;
 
@@ -31,7 +32,16 @@ export function normalizeOllamaBaseUrl(baseUrl) {
 }
 
 function getProvider(config) {
-  return config.provider === "ollama" ? "ollama" : "openai";
+  if (config.provider === "ollama") return "ollama";
+  if (config.provider === "codex") return "codex";
+  return "openai";
+}
+
+// The model actually used for a request: codex has its own model key so
+// switching providers never invalidates the openai/ollama model (or vice
+// versa).
+export function getActiveModel(config) {
+  return getProvider(config) === "codex" ? resolveCodexModel(config) : config.model;
 }
 
 export function buildOpenAiHeaders(apiKey) {
@@ -438,6 +448,9 @@ async function handleError(response, errorLabel) {
 export async function listModels(config) {
   const provider = getProvider(config);
   const timeoutMs = Number(config.requestTimeoutMs);
+  if (provider === "codex") {
+    return listCodexModels();
+  }
   if (provider === "ollama") {
     const baseUrl = normalizeOllamaBaseUrl(config.ollamaBaseUrl);
     const url = `${baseUrl}/api/tags`;
@@ -599,6 +612,11 @@ export async function chatCompletion(config, messages, options = {}) {
       ? options.contextWindow
       : await resolveContextWindow(config);
   const budget = resolveGenerationBudget(config, messages, contextWindow);
+  if (provider === "codex") {
+    // The Codex backend manages generation limits per plan; the budget only
+    // steered history trimming, which callers already applied.
+    return codexChatCompletion(config, messages);
+  }
   if (provider === "ollama") {
     return ollamaChatCompletion(config, messages, budget);
   }

@@ -16,6 +16,7 @@ const ALL_COMMANDS = [
   "chat",
   "models",
   "config",
+  "auth",
   "completions",
 ];
 

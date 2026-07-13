@@ -35,9 +35,23 @@ async function promptConfigValue(label, currentValue) {
   });
 }
 
+const PROVIDERS = [
+  { value: "openai", label: "OpenAI-compatible (includes GPT4All)" },
+  { value: "ollama", label: "Ollama" },
+  { value: "codex", label: "OpenAI Codex (ChatGPT plan, via gac auth login)" },
+];
+
+export function providerLabel(provider) {
+  const entry = PROVIDERS.find((item) => item.value === provider);
+  return entry ? entry.label : PROVIDERS[0].label;
+}
+
 async function selectConfigProvider(config) {
-  const options = ["OpenAI-compatible (includes GPT4All)", "Ollama"];
-  const currentIndex = config.provider === "ollama" ? 1 : 0;
+  const options = PROVIDERS.map((item) => item.label);
+  const currentIndex = Math.max(
+    PROVIDERS.findIndex((item) => item.value === config.provider),
+    0
+  );
   term("\nSelect provider:\n");
   return new Promise((resolve) => {
     term.singleColumnMenu(
@@ -49,7 +63,7 @@ async function selectConfigProvider(config) {
           resolve(null);
           return;
         }
-        resolve(response.selectedIndex === 1 ? "ollama" : "openai");
+        resolve(PROVIDERS[response.selectedIndex].value);
       }
     );
   });
@@ -67,6 +81,11 @@ const FIELDS = [
     note: "API Key (leave empty to clear)",
   },
   { key: "model", label: "Model", prompt: "Model" },
+  {
+    key: "codexModel",
+    label: "Codex Model",
+    prompt: "Codex model (used only when provider is codex)",
+  },
   { key: "temperature", label: "Temperature", prompt: "Temperature" },
   { key: "maxTokens", label: "Max Tokens", prompt: "Max Tokens" },
   {
@@ -128,7 +147,7 @@ export async function runConfigTui(config) {
 
   const fieldLabel = (field) => {
     if (field.kind === "provider") {
-      return `Provider: ${updatedConfig.provider === "ollama" ? "Ollama" : "OpenAI-compatible"}`;
+      return `Provider: ${providerLabel(updatedConfig.provider)}`;
     }
     const value = field.mask
       ? maskApiKey(updatedConfig[field.key])

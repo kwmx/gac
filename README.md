@@ -1,6 +1,6 @@
 # GAC CLI (gac)
 
-Terminal client for OpenAI-compatible APIs (including GPT4All) and Ollama. Supports streaming responses, interactive chat with saved sessions, piped input, AI-generated commit messages, step-by-step runbooks with approval gates, and configurable markdown rendering (tables and syntax highlighting included) using `terminal-kit`.
+Terminal client for OpenAI-compatible APIs (including GPT4All), Ollama, and OpenAI Codex (sign in with your ChatGPT plan — no API key needed). Supports streaming responses, interactive chat with saved sessions, piped input, AI-generated commit messages, step-by-step runbooks with approval gates, and configurable markdown rendering (tables and syntax highlighting included) using `terminal-kit`.
 
 ## Installation
 
@@ -156,6 +156,24 @@ gac completions fish > ~/.config/fish/completions/gac.fish
 
 Completes commands, flags, `config get/set/tui`, and file paths for `-f`/`--export`.
 
+## OpenAI Codex (ChatGPT plan)
+
+gac can talk to OpenAI's Codex backend using the same ChatGPT OAuth sign-in the official Codex CLI uses, so usage is billed to your ChatGPT plan (Plus/Pro/Team) instead of an API key:
+
+```bash
+gac auth login                     # opens the browser; sign in with your ChatGPT account
+gac config set provider codex      # or pick it in `gac config tui`
+gac ask "how do I list open ports?"
+```
+
+- `gac auth status` shows who is signed in (and the plan); `gac auth logout` removes the stored credentials.
+- If you already use the Codex CLI, gac reuses your existing `~/.codex/auth.json` login automatically — no second sign-in needed.
+- Tokens are stored in `~/.gac/codex-auth.json` and refreshed automatically when they expire.
+- The Codex provider has its own model setting (`codexModel`, default `gpt-5.1-codex`), so you can switch between `openai`, `ollama`, and `codex` freely without breaking either setup. `gac models` and `/model` in chat edit the right one for the active provider.
+- On a remote/SSH machine, forward the OAuth callback port before `gac auth login`: `ssh -L 1455:localhost:1455 <host>`.
+- The Codex backend only streams; with `stream: false` gac simply buffers the stream and prints the finished reply.
+- Usage counts against your ChatGPT plan's limits; when a limit is hit the API returns an error and gac reports when it resets.
+
 ## Configuration
 
 Config file is created on first run:
@@ -178,14 +196,16 @@ gac config set detailedContext true
 
 ### Core settings
 
-- `provider` (string): `openai` (default) or `ollama`
+- `provider` (string): `openai` (default), `ollama`, or `codex` (ChatGPT plan OAuth — see above)
 - `baseUrl` (string): GPT4All server base, e.g. `http://localhost:4891`
 - `ollamaBaseUrl` (string): Ollama base, e.g. `http://localhost:11434`
-- `apiKey` (string): API key for OpenAI-compatible services (empty for local servers)
-- `model` (string): model ID from `/v1/models`
+- `codexBaseUrl` (string): Codex backend base (default `https://chatgpt.com/backend-api/codex`)
+- `apiKey` (string): API key for OpenAI-compatible services (empty for local servers; not used by `codex`)
+- `model` (string): model ID from `/v1/models` (used by `openai` and `ollama`)
+- `codexModel` (string): model used when `provider` is `codex` (default `gpt-5.1-codex`)
 - `temperature` (number)
 - `maxTokens` (number): response token cap (default `2048`). Automatically reduced per request when the prompt leaves less room in the context window.
-- `contextWindow` (`"auto"` or number): size of the model's context window in tokens. `"auto"` (default) asks the backend — Ollama via `/api/show`, OpenAI-compatible servers via context metadata in `/v1/models` (LM Studio, OpenRouter, and others expose it). Set a number to pin it manually; detection failures fall back to a conservative 8192. This drives chat-history trimming, input truncation, and Ollama's `num_ctx` (sized to the conversation, so large-context models don't waste memory on short chats).
+- `contextWindow` (`"auto"` or number): size of the model's context window in tokens. `"auto"` (default) asks the backend — Ollama via `/api/show`, OpenAI-compatible servers via context metadata in `/v1/models` (LM Studio, OpenRouter, and others expose it); the `codex` provider uses the GPT-5 family's known ~272k window. Set a number to pin it manually; detection failures fall back to a conservative 8192. This drives chat-history trimming, input truncation, and Ollama's `num_ctx` (sized to the conversation, so large-context models don't waste memory on short chats).
 - `stream` (boolean)
 - `requestTimeoutMs` (number): request timeout in milliseconds (0 to disable). Useful for larger models or slower servers.
 - `defaultAction` (string): default mode for direct prompts (`suggest`, `ask`, or `explain`).

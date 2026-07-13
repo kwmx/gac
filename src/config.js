@@ -3,11 +3,17 @@ import path from "path";
 import os from "os";
 
 const DEFAULT_CONFIG = {
+  // "openai" (any OpenAI-compatible server), "ollama", or "codex"
+  // (OpenAI Codex via ChatGPT-plan OAuth — sign in with `gac auth login`).
   provider: "openai",
   baseUrl: "http://localhost:4891",
   ollamaBaseUrl: "http://localhost:11434",
+  codexBaseUrl: "https://chatgpt.com/backend-api/codex",
   apiKey: "",
   model: "gpt4all",
+  // Model used only when provider is "codex"; kept separate from `model` so
+  // switching providers back and forth never breaks either setup.
+  codexModel: "gpt-5.1-codex",
   temperature: 0.7,
   maxTokens: 2048,
   // "auto" probes the backend for the model's context length (Ollama
