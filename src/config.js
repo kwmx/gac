@@ -9,7 +9,10 @@ const DEFAULT_CONFIG = {
   apiKey: "",
   model: "gpt4all",
   temperature: 0.7,
-  maxTokens: 512,
+  maxTokens: 2048,
+  // "auto" probes the backend for the model's context length (Ollama
+  // /api/show, or context metadata in /v1/models); a number pins it manually.
+  contextWindow: "auto",
   stream: true,
   requestTimeoutMs: 300000,
   defaultAction: "suggest",
@@ -45,6 +48,15 @@ const DEFAULT_CONFIG = {
       bottom: "─",
       bottomRight: "┘",
     },
+    syntaxHighlight: true,
+    syntaxStyles: {
+      keyword: ["brightWhite", "bold"],
+      string: ["brightGreen"],
+      comment: ["dim"],
+      number: ["brightYellow"],
+    },
+    tableBorderStyle: ["dim"],
+    tableHeaderStyles: ["bold"],
   },
 };
 

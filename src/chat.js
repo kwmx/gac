@@ -5,6 +5,11 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { chatCompletion } from "./gpt4all.js";
 import { createMarkdownRenderer } from "./markdown.js";
+import {
+  resolveContextWindow,
+  contextBudget,
+  trimMessagesToBudget,
+} from "./contextwindow.js";
 
 const { terminal: term } = terminalKit;
 
@@ -106,9 +111,10 @@ function formatSessionLabel(s) {
   return `${name.padEnd(maxName + 2)}${info}`;
 }
 
-function printChatHeader(session, config) {
+function printChatHeader(session, config, contextWindow) {
   const title = ` Chat: ${session.name} `;
-  const model = ` model: ${config.model} `;
+  const ctx = contextWindow ? ` · ctx ${contextWindow}` : "";
+  const model = ` model: ${config.model}${ctx} `;
   const fill = hr("─", Math.max(0, tw() - title.length - model.length));
   term.bold.brightCyan(title);
   term.dim(`${fill}${model}\n`);
@@ -157,7 +163,7 @@ function printHistory(session, config) {
 // AI title generation
 // ─────────────────────────────────────────────────────────────────
 
-async function generateAiTitle(userMsg, aiMsg, config) {
+async function generateAiTitle(userMsg, aiMsg, config, contextWindow) {
   try {
     const titleConfig = { ...config, stream: false, renderMarkdown: false, maxTokens: 12 };
     const msgs = [
@@ -171,7 +177,7 @@ async function generateAiTitle(userMsg, aiMsg, config) {
         content: `User: "${userMsg.slice(0, 300)}"\nAI: "${aiMsg.slice(0, 300)}"`,
       },
     ];
-    const raw = await chatCompletion(titleConfig, msgs);
+    const raw = await chatCompletion(titleConfig, msgs, { contextWindow });
     const title = (raw || "")
       .trim()
       .replace(/^["']|["'.,!?]$/g, "")
@@ -363,6 +369,9 @@ async function sessionPicker(config) {
 
 // Returns { action: "exit"|"picker"|"new" }
 async function runChatSession(session, config, defaultSystemPrompt) {
+  // Resolved once per session; detection results are cached per model, so
+  // this is at most one cheap probe against the backend.
+  const contextWindow = await resolveContextWindow(config);
   const effectiveSystemPrompt = session.customSystemPrompt ?? defaultSystemPrompt;
 
   // Build the live messages array
@@ -385,7 +394,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
 
   const drawScreen = () => {
     term.clear();
-    printChatHeader(session, config);
+    printChatHeader(session, config, contextWindow);
     term(`${hr()}\n`);
     printCommandsHint();
     term("\n");
@@ -420,7 +429,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
 
   while (true) {
     term.bold.brightBlue("You ▶ ");
-    const input = await new Promise((resolve) => {
+    let input = await new Promise((resolve) => {
       term.inputField(
         { cancelable: true, history: [...inputHistory] },
         (error, val) => {
@@ -429,6 +438,26 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         }
       );
     });
+
+    // Multi-line input: a line starting with """ collects lines verbatim
+    // until a closing """ on its own line.
+    if (input.startsWith('"""')) {
+      const first = input.slice(3).trim();
+      const collected = first ? [first] : [];
+      term.dim('  Multi-line input — finish with """ on its own line.\n');
+      while (true) {
+        term.dim("... ");
+        const line = await new Promise((resolve) => {
+          term.inputField({ cancelable: true }, (error, val) => {
+            term("\n");
+            resolve(error || val === undefined || val === null ? '"""' : val);
+          });
+        });
+        if (line.trim() === '"""') break;
+        collected.push(line);
+      }
+      input = collected.join("\n").trim();
+    }
 
     if (!input) continue;
 
@@ -446,6 +475,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         ["/clear",         "Wipe history in this chat"],
         ["/retry",         "Regenerate the last AI response"],
         ["/export",        "Save conversation to a Markdown file"],
+        ['"""',            "Start multi-line input (end with \"\"\" on its own line)"],
         ["exit / quit",    "Exit gac chat"],
       ];
       for (const [cmd, desc] of cmds) {
@@ -480,7 +510,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         session.autoNamed = true;
         saveSession(session);
         term("\n");
-        printChatHeader(session, config);
+        printChatHeader(session, config, contextWindow);
         term(`${hr()}\n`);
         printCommandsHint();
         term("\n");
@@ -554,10 +584,19 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       const [previousReply] = messages.splice(lastAiIdx, 1);
       session.messages = [...messages];
       term.dim("  Retrying…\n");
+      const retryTrim = trimMessagesToBudget(
+        messages,
+        contextBudget(contextWindow, config.maxTokens)
+      );
+      if (retryTrim.dropped > 0) {
+        term.dim(
+          `  (trimmed ${retryTrim.dropped} earlier message${retryTrim.dropped === 1 ? "" : "s"} to fit the context window)\n`
+        );
+      }
       term.bold.brightGreen("AI  ◀ ");
       let retryReply;
       try {
-        retryReply = await chatCompletion(config, messages);
+        retryReply = await chatCompletion(config, retryTrim.messages, { contextWindow });
       } catch (err) {
         // Restore the previous reply so a failed retry doesn't lose it.
         messages.splice(lastAiIdx, 0, previousReply);
@@ -599,11 +638,23 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     messages.push({ role: "user", content: input });
     inputHistory.push(input);
 
+    // The full history stays in the session; only the request is trimmed to
+    // fit the model's context window.
+    const trimmed = trimMessagesToBudget(
+      messages,
+      contextBudget(contextWindow, config.maxTokens)
+    );
+    if (trimmed.dropped > 0) {
+      term.dim(
+        `  (trimmed ${trimmed.dropped} earlier message${trimmed.dropped === 1 ? "" : "s"} to fit the context window)\n`
+      );
+    }
+
     term.bold.brightGreen("AI  ◀ ");
 
     let reply;
     try {
-      reply = await chatCompletion(config, messages);
+      reply = await chatCompletion(config, trimmed.messages, { contextWindow });
     } catch (err) {
       term.red(`\nError: ${err.message}\n\n`);
       messages.pop();
@@ -637,13 +688,13 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       // Generate and apply title after the first exchange (awaited to avoid
       // concurrent requests to the LLM server, which often handles only one at a time)
       if (!session.autoNamed && messages.filter((m) => m.role === "user").length === 1) {
-        const title = await generateAiTitle(input, reply, config);
+        const title = await generateAiTitle(input, reply, config, contextWindow);
         if (title) {
           session.name = title;
           session.autoNamed = true;
           saveSession(session);
           term("\n");
-          printChatHeader(session, config);
+          printChatHeader(session, config, contextWindow);
           term(`${hr()}\n`);
           printCommandsHint();
           term("\n");

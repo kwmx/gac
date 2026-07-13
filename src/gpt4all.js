@@ -1,5 +1,6 @@
 import terminalKit from "terminal-kit";
 import { createMarkdownRenderer } from "./markdown.js";
+import { resolveContextWindow, resolveGenerationBudget } from "./contextwindow.js";
 
 const { terminal: term } = terminalKit;
 
@@ -140,10 +141,16 @@ async function parseStream(response, onToken, renderer, config) {
   const showThinking = config?.showThinking !== false;
 
   const flushLineBuffer = () => {
-    if (renderer && lineBuffer) {
-      onToken(renderer.renderLine(lineBuffer));
+    if (!renderer) return;
+    if (lineBuffer) {
+      const rendered = renderer.renderLine(lineBuffer);
+      if (rendered !== null) onToken(rendered);
       lineBuffer = "";
     }
+    // Emit anything the renderer is still buffering (a table cut off by the
+    // end of the stream).
+    const pending = renderer.flush();
+    if (pending) onToken(pending);
   };
 
   // Restore the terminal to the pre-"thinking..." state. Used both when a
@@ -167,7 +174,9 @@ async function parseStream(response, onToken, renderer, config) {
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() || "";
         for (const line of lines) {
-          onToken(`${renderer.renderLine(line)}\n`);
+          const rendered = renderer.renderLine(line);
+          // null means the renderer buffered the line (e.g. a table row).
+          if (rendered !== null) onToken(`${rendered}\n`);
         }
       }
     },
@@ -216,11 +225,23 @@ async function parseStream(response, onToken, renderer, config) {
     }
   }
 
+  // A final event without a trailing newline would otherwise be dropped.
+  const remaining = buffer.trim();
+  if (remaining.startsWith("data:")) {
+    const payload = remaining.replace(/^data:\s*/, "");
+    if (payload !== "[DONE]") {
+      try {
+        const delta = getContentDelta(JSON.parse(payload));
+        if (delta) thinkingParser.push(delta);
+      } catch (err) {
+        // Ignore non-JSON payloads
+      }
+    }
+  }
+
   thinkingParser.flush();
   finishThinkingDisplay();
-  if (renderer && lineBuffer) {
-    onToken(renderer.renderLine(lineBuffer));
-  }
+  flushLineBuffer();
 
   return fullText;
 }
@@ -235,10 +256,16 @@ async function parseOllamaStream(response, onToken, renderer, config) {
   const showThinking = config?.showThinking !== false;
 
   const flushLineBuffer = () => {
-    if (renderer && lineBuffer) {
-      onToken(renderer.renderLine(lineBuffer));
+    if (!renderer) return;
+    if (lineBuffer) {
+      const rendered = renderer.renderLine(lineBuffer);
+      if (rendered !== null) onToken(rendered);
       lineBuffer = "";
     }
+    // Emit anything the renderer is still buffering (a table cut off by the
+    // end of the stream).
+    const pending = renderer.flush();
+    if (pending) onToken(pending);
   };
 
   // Restore the terminal to the pre-"thinking..." state. Used both when a
@@ -262,7 +289,9 @@ async function parseOllamaStream(response, onToken, renderer, config) {
         const lines = lineBuffer.split("\n");
         lineBuffer = lines.pop() || "";
         for (const line of lines) {
-          onToken(`${renderer.renderLine(line)}\n`);
+          const rendered = renderer.renderLine(line);
+          // null means the renderer buffered the line (e.g. a table row).
+          if (rendered !== null) onToken(`${rendered}\n`);
         }
       }
     },
@@ -293,15 +322,17 @@ async function parseOllamaStream(response, onToken, renderer, config) {
       if (!trimmed) continue;
       try {
         const json = JSON.parse(trimmed);
+        // Extract content before honoring done: the final chunk may carry
+        // both (e.g. servers that answer a streamed request with one object).
+        const delta = getOllamaContentDelta(json);
+        if (delta) {
+          thinkingParser.push(delta);
+        }
         if (json.done) {
           thinkingParser.flush();
           finishThinkingDisplay();
           flushLineBuffer();
           return fullText;
-        }
-        const delta = getOllamaContentDelta(json);
-        if (delta) {
-          thinkingParser.push(delta);
         }
       } catch (err) {
         // Ignore non-JSON payloads
@@ -309,11 +340,20 @@ async function parseOllamaStream(response, onToken, renderer, config) {
     }
   }
 
+  // A final chunk without a trailing newline would otherwise be dropped.
+  const remaining = buffer.trim();
+  if (remaining) {
+    try {
+      const delta = getOllamaContentDelta(JSON.parse(remaining));
+      if (delta) thinkingParser.push(delta);
+    } catch (err) {
+      // Ignore non-JSON payloads
+    }
+  }
+
   thinkingParser.flush();
   finishThinkingDisplay();
-  if (renderer && lineBuffer) {
-    onToken(renderer.renderLine(lineBuffer));
-  }
+  flushLineBuffer();
 
   return fullText;
 }
@@ -403,14 +443,14 @@ export async function listModels(config) {
   return json.data.map((model) => model.id).filter(Boolean);
 }
 
-async function openAiChatCompletion(config, messages) {
+async function openAiChatCompletion(config, messages, budget) {
   const url = `${normalizeOpenAiBaseUrl(config.baseUrl)}/chat/completions`;
   const timeoutMs = Number(config.requestTimeoutMs);
   const payload = {
     model: config.model,
     messages,
     temperature: config.temperature,
-    max_tokens: config.maxTokens,
+    max_tokens: budget.maxTokens,
     stream: Boolean(config.stream),
   };
 
@@ -482,7 +522,7 @@ async function openAiChatCompletion(config, messages) {
   return content;
 }
 
-async function ollamaChatCompletion(config, messages) {
+async function ollamaChatCompletion(config, messages, budget) {
   const baseUrl = normalizeOllamaBaseUrl(config.ollamaBaseUrl);
   const url = `${baseUrl}/api/chat`;
   const timeoutMs = Number(config.requestTimeoutMs);
@@ -492,7 +532,10 @@ async function ollamaChatCompletion(config, messages) {
     stream: Boolean(config.stream),
     options: {
       temperature: config.temperature,
-      num_predict: config.maxTokens,
+      num_predict: budget.maxTokens,
+      // Size the runtime context to the conversation (instead of Ollama's
+      // 4096 default) so long chats aren't silently truncated by the server.
+      ...(budget.numCtx ? { num_ctx: budget.numCtx } : {}),
     },
   };
 
@@ -536,10 +579,18 @@ async function ollamaChatCompletion(config, messages) {
   return content;
 }
 
-export async function chatCompletion(config, messages) {
+export async function chatCompletion(config, messages, options = {}) {
   const provider = getProvider(config);
+  // Callers that already resolved the context window pass it in (including
+  // null for "unknown"); otherwise resolve it here — detection results are
+  // cached per provider/model, so this is a one-time probe per process.
+  const contextWindow =
+    options.contextWindow !== undefined
+      ? options.contextWindow
+      : await resolveContextWindow(config);
+  const budget = resolveGenerationBudget(config, messages, contextWindow);
   if (provider === "ollama") {
-    return ollamaChatCompletion(config, messages);
+    return ollamaChatCompletion(config, messages, budget);
   }
-  return openAiChatCompletion(config, messages);
+  return openAiChatCompletion(config, messages, budget);
 }
