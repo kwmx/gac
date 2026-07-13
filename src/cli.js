@@ -1,6 +1,6 @@
 import terminalKit from "terminal-kit";
 import { chatCompletion, listModels } from "./gpt4all.js";
-import { getConfigPath, loadConfig, setConfigValue } from "./config.js";
+import { getConfigPath, loadConfig, setConfigValue, getConfigValue } from "./config.js";
 import { createMarkdownRenderer } from "./markdown.js";
 import { runChat } from "./chat.js";
 import { spawn } from "child_process";
@@ -956,7 +956,16 @@ export async function runCli(argv) {
     }
     if (args[1] === "get" && args[2]) {
       const key = args[2];
-      term(`${config[key]}\n`);
+      const value = getConfigValue(key);
+      if (value === undefined) {
+        term(`Key "${key}" is not set.\n`);
+        return;
+      }
+      if (value !== null && typeof value === "object") {
+        term(`${JSON.stringify(value, null, 2)}\n`);
+      } else {
+        term(`${value}\n`);
+      }
       return;
     }
     if (args[1] === "set" && args[2] && args[3] !== undefined) {

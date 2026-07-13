@@ -118,6 +118,20 @@ function coerceValue(value) {
   return value;
 }
 
+export function getConfigValue(key) {
+  const config = loadConfig();
+  const parts = key.split(".");
+  let cursor = config;
+  for (const part of parts) {
+    if (cursor && typeof cursor === "object" && part in cursor) {
+      cursor = cursor[part];
+    } else {
+      return undefined;
+    }
+  }
+  return cursor;
+}
+
 export function setConfigValue(key, value) {
   const config = loadConfig();
   const normalizedValue = coerceValue(value);
