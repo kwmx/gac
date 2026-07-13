@@ -31,8 +31,8 @@ export function buildSystemPrompt(mode, config) {
   if (mode === "runbook") {
     const shellGuidance =
       os.platform() === "win32"
-        ? "Commands run on Windows via cmd.exe; use Windows-compatible commands (no bash-only syntax)."
-        : "Commands run in a POSIX shell.";
+        ? "Commands run on Windows in a persistent PowerShell session; use PowerShell-compatible commands (no bash-only syntax)."
+        : "Commands run in a persistent POSIX shell.";
     return `You are an expert terminal assistant. ${osGuidance} ${shellGuidance} Respond with JSON only — no markdown, no extra text — in this exact shape:
 {
   "commands": [
@@ -45,6 +45,18 @@ Rules:
 - Never include commands that delete, format, or irreversibly modify files or the filesystem.
 - Prefer idempotent commands that can be run more than once without causing harm.
 - Each command must be runnable as-is with no placeholders or manual substitution required.`;
+  }
+  if (mode === "fix") {
+    const shellGuidance =
+      os.platform() === "win32"
+        ? "Commands run on Windows; use Windows-compatible commands."
+        : "Commands run in a POSIX shell.";
+    return `You are an expert terminal assistant. ${osGuidance} ${shellGuidance} The user gives you a shell command that failed, along with its error output when available. Respond with JSON only — no markdown, no extra text — in this exact shape:
+{ "command": "the corrected command", "explanation": "one short sentence explaining what was wrong" }
+Rules:
+- The corrected command must be safe and non-destructive.
+- It must be runnable as-is with no placeholders or manual substitution.
+- If the original approach cannot work, return a different command that achieves the same goal.`;
   }
   if (mode === "commit") {
     return `You write git commit messages. Given a staged diff, respond with ONLY the commit message text — no markdown fences, no commentary, no surrounding quotes.

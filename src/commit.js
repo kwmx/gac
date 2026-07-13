@@ -8,6 +8,7 @@ import { promisify } from "util";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { fenceFor, truncateForContext } from "./input.js";
+import { promptKeyAction } from "./tui.js";
 import { resolveContextWindow, contextBudget } from "./contextwindow.js";
 
 const { terminal: term } = terminalKit;
@@ -81,25 +82,17 @@ function printMessageBlock(message) {
   term.dim("└" + "─".repeat(60) + "\n");
 }
 
-async function promptCommitAction() {
-  term.dim("[Enter] commit  [e] edit  [r] regenerate  [q] quit: ");
-  return new Promise((resolve) => {
-    term.grabInput({ mouse: "button" });
-    const finish = (action) => {
-      term.grabInput(false);
-      term.removeListener("key", onKey);
-      term("\n");
-      resolve(action);
-    };
-    const onKey = (name) => {
-      if (name === "ENTER") return finish("commit");
-      if (name === "e" || name === "E") return finish("edit");
-      if (name === "r" || name === "R") return finish("regenerate");
-      if (name === "q" || name === "Q" || name === "ESCAPE" || name === "CTRL_C") {
-        return finish("quit");
-      }
-    };
-    term.on("key", onKey);
+function promptCommitAction() {
+  return promptKeyAction("[Enter] commit  [e] edit  [r] regenerate  [q] quit: ", {
+    ENTER: "commit",
+    e: "edit",
+    E: "edit",
+    r: "regenerate",
+    R: "regenerate",
+    q: "quit",
+    Q: "quit",
+    ESCAPE: "quit",
+    CTRL_C: "quit",
   });
 }
 

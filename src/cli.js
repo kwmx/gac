@@ -21,6 +21,8 @@ import {
 } from "./contextwindow.js";
 import { runRunbook } from "./runbook.js";
 import { runCommit } from "./commit.js";
+import { runFix } from "./fix.js";
+import { runCompletions } from "./completions.js";
 import { runConfigTui } from "./configtui.js";
 
 const { terminal: term } = terminalKit;
@@ -278,6 +280,17 @@ export async function runCli(argv) {
 
   if (command === "commit") {
     await runCommit(config, { dryRun: flags.dryRun });
+    return;
+  }
+
+  if (command === "completions") {
+    runCompletions(rest[0]);
+    return;
+  }
+
+  if (command === "fix") {
+    const piped = !inTty ? await readPipedStdin() : null;
+    await runFix(rest, config, { piped, interactive });
     return;
   }
 

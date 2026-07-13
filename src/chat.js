@@ -3,8 +3,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { chatCompletion } from "./gpt4all.js";
+import { chatCompletion, listModels } from "./gpt4all.js";
 import { createMarkdownRenderer } from "./markdown.js";
+import { copyToClipboard, extractLastCodeBlock } from "./tui.js";
 import {
   resolveContextWindow,
   contextBudget,
@@ -121,7 +122,7 @@ function printChatHeader(session, config, contextWindow) {
 }
 
 function printCommandsHint() {
-  const commands = ["/help", "/new", "/sessions", "/rename", "/system", "/clear", "/retry", "/export", "exit"];
+  const commands = ["/help", "/new", "/sessions", "/model", "/copy", "/retry", "/export", "exit"];
   const line = commands.join("  ");
   if (line.length + 1 <= tw()) {
     term.dim(` ${line}\n`);
@@ -369,9 +370,9 @@ async function sessionPicker(config) {
 
 // Returns { action: "exit"|"picker"|"new" }
 async function runChatSession(session, config, defaultSystemPrompt) {
-  // Resolved once per session; detection results are cached per model, so
-  // this is at most one cheap probe against the backend.
-  const contextWindow = await resolveContextWindow(config);
+  // Resolved once per session (and again on /model switches); detection
+  // results are cached per model, so this is at most one cheap probe.
+  let contextWindow = await resolveContextWindow(config);
   const effectiveSystemPrompt = session.customSystemPrompt ?? defaultSystemPrompt;
 
   // Build the live messages array
@@ -473,6 +474,8 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         ["/sessions",      "Return to session picker"],
         ["/rename [name]", "Rename this chat"],
         ["/system",        "View or set the system prompt"],
+        ["/model",         "Switch models for this session"],
+        ["/copy",          "Copy the last code block to the clipboard"],
         ["/clear",         "Wipe history in this chat"],
         ["/retry",         "Regenerate the last AI response"],
         ["/export",        "Save conversation to a Markdown file"],
@@ -552,6 +555,53 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         term.dim(`  ${current.replace(/\n/g, "\n  ")}\n\n`);
         term.dim('  To change: /system <new prompt>   To reset: /system reset\n\n');
       }
+      continue;
+    }
+
+    if (input === "/model") {
+      let models;
+      try {
+        models = await listModels(config);
+      } catch (err) {
+        term.red(`  Could not list models: ${err.message}\n\n`);
+        continue;
+      }
+      if (!models.length) {
+        term.dim("  No models found from the configured provider.\n\n");
+        continue;
+      }
+      term.dim("\n  Select a model for this session:\n");
+      const idx = await menuSelect(
+        models.map((m) => `  ${m}`),
+        { selectedIndex: Math.max(models.indexOf(config.model), 0) }
+      );
+      if (idx === null) continue;
+      config.model = models[idx];
+      // The new model may have a different context window.
+      contextWindow = await resolveContextWindow(config);
+      term.dim(
+        `  Model set to ${config.model} for this session. Use \`gac models\` to change the default.\n\n`
+      );
+      printChatHeader(session, config, contextWindow);
+      term(`${hr()}\n`);
+      printCommandsHint();
+      term("\n");
+      continue;
+    }
+
+    if (input === "/copy") {
+      const lastAi = [...messages].reverse().find((m) => m.role === "assistant");
+      if (!lastAi) {
+        term.dim("  Nothing to copy yet.\n\n");
+        continue;
+      }
+      const block = extractLastCodeBlock(lastAi.content);
+      copyToClipboard(block ?? lastAi.content.trim());
+      term.dim(
+        block
+          ? "  Copied the last code block to the clipboard.\n\n"
+          : "  No code block found — copied the whole reply.\n\n"
+      );
       continue;
     }
 

@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { buildRunbookContext } from "./sysinfo.js";
+import { promptKeyAction } from "./tui.js";
 import { attachInputToPrompt, formatFileContexts, truncateForContext } from "./input.js";
 import {
   resolveContextWindow,
@@ -158,14 +159,44 @@ export function buildRunbookScript(commands, notes, options = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Command runners (persistent POSIX shell / per-step Windows)
+// Command runner (persistent shell: bash/login shell on POSIX,
+// PowerShell on Windows — cwd and environment persist across steps)
 // ─────────────────────────────────────────────────────────────────
 
-function createRunbookShell() {
-  const shell = process.env.SHELL || "bash";
-  const child = spawn(shell, ["-l"], { stdio: "pipe" });
+// Everything shell-specific lives in the spec: how to start the shell, what
+// to run first, and which lines emit the exit-code marker after a command.
+export function buildShellSpec(platform = os.platform()) {
+  if (platform === "win32") {
+    return {
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile", "-Command", "-"],
+      initLines: [],
+      // $LASTEXITCODE is sticky across cmdlets, so reset it before each
+      // command; the marker then reads $? for the command statement itself.
+      preCommandLines: ["$global:LASTEXITCODE = 0"],
+      statusLines: (token) => [
+        "if ($?) { $__gac_status = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } } else { $__gac_status = 1 }",
+        `Write-Output ("__GAC_EXIT__${token}__:" + $__gac_status + "__")`,
+      ],
+    };
+  }
+  return {
+    command: process.env.SHELL || "bash",
+    args: ["-l"],
+    initLines: ["set -o pipefail"],
+    preCommandLines: [],
+    statusLines: (token) => [
+      "__gac_status=$?",
+      `printf "__GAC_EXIT__${token}__:%s__\\n" "$__gac_status"`,
+    ],
+  };
+}
+
+function createRunbookShell(spec) {
+  const child = spawn(spec.command, spec.args, { stdio: "pipe" });
   const session = {
     child,
+    spec,
     pending: null,
     closed: false,
   };
@@ -248,7 +279,9 @@ function createRunbookShell() {
     }
   });
 
-  child.stdin.write("set -o pipefail\n");
+  for (const line of spec.initLines) {
+    child.stdin.write(`${line}\n`);
+  }
   return session;
 }
 
@@ -277,101 +310,20 @@ function runShellCommand(session, command) {
       done: false,
       exitCode: null,
     };
+    for (const line of session.spec.preCommandLines) {
+      session.child.stdin.write(`${line}\n`);
+    }
     session.child.stdin.write(`${command}\n`);
-    session.child.stdin.write(`__gac_status=$?\n`);
-    session.child.stdin.write(
-      `printf "__GAC_EXIT__${token}__:%s__\\n" "$__gac_status"\n`
-    );
+    for (const line of session.spec.statusLines(token)) {
+      session.child.stdin.write(`${line}\n`);
+    }
   });
 }
 
-// `cd` needs special handling on Windows because each step runs in its own
-// cmd.exe process, so directory changes would not stick otherwise.
-export function parseWindowsCdTarget(command) {
-  const trimmed = String(command || "").trim();
-  // Compound or redirected commands (cd x && ..., cd x > out) must run in the
-  // real shell; only a bare cd is simulated in-process for cwd persistence.
-  if (/[&|<>]/.test(trimmed)) return null;
-  const match = trimmed.match(/^cd(?:\s+\/d)?(?:\s+(.+))?$/i);
-  if (!match) return null;
-  let target = (match[1] || "").trim();
-  if (
-    target.length >= 2 &&
-    ((target.startsWith('"') && target.endsWith('"')) ||
-      (target.startsWith("'") && target.endsWith("'")))
-  ) {
-    target = target.slice(1, -1);
-  }
-  return { target: target || null };
-}
-
-function createWindowsRunner() {
-  let cwd = process.cwd();
-
-  const run = (command) => {
-    const cd = parseWindowsCdTarget(command);
-    if (cd) {
-      if (!cd.target) {
-        term(`${cwd}\n`);
-        return Promise.resolve({ code: 0, stdout: `${cwd}\n`, stderr: "" });
-      }
-      const next = path.resolve(cwd, cd.target);
-      try {
-        if (fs.statSync(next).isDirectory()) {
-          cwd = next;
-          return Promise.resolve({ code: 0, stdout: "", stderr: "" });
-        }
-      } catch (err) {
-        // Fall through to the not-found error below.
-      }
-      const message = `The system cannot find the path specified: ${next}\n`;
-      term(message);
-      return Promise.resolve({ code: 1, stdout: "", stderr: message });
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        resolve(result);
-      };
-      let stdout = "";
-      let stderr = "";
-      const child = spawn(command, { shell: true, cwd, stdio: "pipe" });
-      child.stdout.on("data", (data) => {
-        const text = data.toString();
-        stdout += text;
-        term(text);
-      });
-      child.stderr.on("data", (data) => {
-        const text = data.toString();
-        stderr += text;
-        term(text);
-      });
-      child.on("error", (err) => {
-        const message = `Failed to start command: ${err.message}\n`;
-        stderr += message;
-        term(message);
-        finish({ code: 1, stdout, stderr });
-      });
-      child.on("close", (code) => {
-        finish({ code: code ?? 1, stdout, stderr });
-      });
-    });
-  };
-
-  return { run, close: () => {} };
-}
-
-// Unified runner: a persistent login shell on POSIX (so cd/env persist across
-// steps), a per-step cmd.exe with tracked cwd on Windows. Windows limitation:
-// environment variables set in one step do not carry into the next.
+// Unified runner: one persistent shell session per runbook, so cd and
+// environment variables persist across steps on every platform.
 export function createCommandRunner() {
-  if (os.platform() === "win32") {
-    return createWindowsRunner();
-  }
-  const session = createRunbookShell();
+  const session = createRunbookShell(buildShellSpec());
   return {
     run: (command) => runShellCommand(session, command),
     close: () => closeRunbookShell(session),
@@ -404,47 +356,84 @@ function printRemainingCommands(commands, startIndex) {
   });
 }
 
-async function confirmRunbookStart(label) {
-  term(label);
-  return new Promise((resolve) => {
-    term.grabInput({ mouse: "button" });
-    const onKey = (name) => {
-      term.grabInput(false);
-      term.removeListener("key", onKey);
-      term("\n");
-      resolve(name === "ENTER");
-    };
-    term.on("key", onKey);
-  });
+async function confirmRunbookStart() {
+  const action = await promptKeyAction(
+    "Press Enter to start running the runbook (q to cancel): ",
+    { ENTER: "start", q: "cancel", Q: "cancel", ESCAPE: "cancel", CTRL_C: "cancel" }
+  );
+  return action === "start";
 }
+
+const QUIT_KEYS = { q: "quit", Q: "quit", ESCAPE: "quit", CTRL_C: "quit" };
 
 // Per-step action prompt. Enter is disabled while the command matches a
 // blocked pattern: it must be edited or skipped first.
-async function promptRunbookAction(isBlocked) {
+function promptRunbookAction(isBlocked) {
+  const keys = { e: "edit", E: "edit", s: "skip", S: "skip", ...QUIT_KEYS };
   if (isBlocked) {
-    term.dim("[e] edit  [s] skip  [q] quit: ");
-  } else {
-    term.dim("[Enter] run  [e] edit  [s] skip  [q] quit: ");
+    return promptKeyAction("[e] edit  [s] skip  [q] quit: ", keys);
   }
-  return new Promise((resolve) => {
-    term.grabInput({ mouse: "button" });
-    const finish = (action) => {
-      term.grabInput(false);
-      term.removeListener("key", onKey);
-      term("\n");
-      resolve(action);
-    };
-    const onKey = (name) => {
-      if (name === "ENTER" && !isBlocked) return finish("run");
-      if (name === "e" || name === "E") return finish("edit");
-      if (name === "s" || name === "S") return finish("skip");
-      if (name === "q" || name === "Q" || name === "ESCAPE" || name === "CTRL_C") {
-        return finish("quit");
-      }
-      // Ignore any other key so a stray keystroke can't run or abort a step.
-    };
-    term.on("key", onKey);
+  return promptKeyAction("[Enter] run  [e] edit  [s] skip  [q] quit: ", {
+    ENTER: "run",
+    ...keys,
   });
+}
+
+function promptFailureAction() {
+  return promptKeyAction(
+    "[r] ask the model for a fix  [s] skip step  [q] stop runbook: ",
+    { r: "fix", R: "fix", s: "skip", S: "skip", ...QUIT_KEYS }
+  );
+}
+
+// Shape-check a {command, explanation} fix payload from the model. Shared
+// with `gac fix`.
+export function extractCommandFix(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const command = String(payload.command || payload.cmd || "").trim();
+  if (!command) return null;
+  return { command, explanation: String(payload.explanation || "").trim() };
+}
+
+function tail(text, maxChars) {
+  const trimmed = String(text || "").trim();
+  return trimmed.length > maxChars ? trimmed.slice(-maxChars) : trimmed;
+}
+
+// Ask the model for a corrected command after a step failed.
+async function requestCommandFix(entry, result, config) {
+  const system = buildSystemPrompt("fix", config);
+  const errorOutput = tail(result.stderr, 2000);
+  const stdoutTail = tail(result.stdout, 1000);
+  const user = [
+    entry.description ? `Goal: ${entry.description}` : null,
+    `This command failed with exit code ${result.code}:`,
+    "```",
+    entry.command,
+    "```",
+    errorOutput ? `Error output:\n\`\`\`\n${errorOutput}\n\`\`\`` : null,
+    stdoutTail ? `Standard output (tail):\n\`\`\`\n${stdoutTail}\n\`\`\`` : null,
+    "Provide the corrected command.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const fixConfig = {
+    ...config,
+    stream: false,
+    renderMarkdown: false,
+    debugRender: false,
+  };
+  try {
+    const reply = await chatCompletion(fixConfig, [
+      { role: "system", content: system },
+      { role: "system", content: `Relevant context:\n${buildRunbookContext()}` },
+      { role: "user", content: user },
+    ]);
+    return extractCommandFix(extractJsonPayload(reply));
+  } catch (err) {
+    term.red(`Fix request failed: ${err.message}\n`);
+    return null;
+  }
 }
 
 async function editCommand(current) {
@@ -541,9 +530,7 @@ export async function runRunbook(prompt, config, opts = {}) {
     return;
   }
 
-  const ready = await confirmRunbookStart(
-    "Press Enter to start running the runbook (any other key to cancel): "
-  );
+  const ready = await confirmRunbookStart();
   if (!ready) {
     term("Runbook execution canceled.\n");
     return;
@@ -558,48 +545,74 @@ export async function runRunbook(prompt, config, opts = {}) {
       term(`${entry.description}\n`);
     }
 
-    let action;
-    while (true) {
-      term(`Command: ${entry.command}\n`);
-      const blocked = findBlockedCommand(entry.command, blockedList);
-      if (blocked) {
-        term.red(
-          `Blocked: ${blocked.reason || "matches a guarded destructive pattern"}\n`
-        );
+    let stepDone = false;
+    while (!stepDone) {
+      let action;
+      while (true) {
+        term(`Command: ${entry.command}\n`);
+        const blocked = findBlockedCommand(entry.command, blockedList);
+        if (blocked) {
+          term.red(
+            `Blocked: ${blocked.reason || "matches a guarded destructive pattern"}\n`
+          );
+        }
+        action = await promptRunbookAction(Boolean(blocked));
+        if (action === "edit") {
+          entry.command = await editCommand(entry.command);
+          continue;
+        }
+        break;
       }
-      action = await promptRunbookAction(Boolean(blocked));
-      if (action === "edit") {
-        entry.command = await editCommand(entry.command);
+
+      if (action === "skip") {
+        term.dim(`Skipped step ${i + 1}.\n`);
+        stepDone = true;
         continue;
       }
-      break;
-    }
+      if (action === "quit") {
+        term(`Stopped at step ${i + 1}.\n`);
+        printRemainingCommands(commands, i);
+        runner.close();
+        return;
+      }
 
-    if (action === "skip") {
-      term.dim(`Skipped step ${i + 1}.\n`);
-      continue;
-    }
-    if (action === "quit") {
-      term(`Stopped at step ${i + 1}.\n`);
-      printRemainingCommands(commands, i);
-      runner.close();
-      return;
-    }
+      term(`\n$ ${entry.command}\n`);
+      const result = await runner.run(entry.command);
+      if (result.code === 0) {
+        term("\n");
+        stepDone = true;
+        continue;
+      }
 
-    term(`\n$ ${entry.command}\n`);
-    const result = await runner.run(entry.command);
-    if (result.code !== 0) {
-      term(
-        `\nCommand failed (step ${i + 1}) with exit code ${result.code}. Stopping.\n`
-      );
+      term(`\nCommand failed (step ${i + 1}) with exit code ${result.code}.\n`);
       if (result.stderr.trim()) {
         term(`Issue:\n${result.stderr}\n`);
       }
-      printRemainingCommands(commands, i + 1);
-      runner.close();
-      return;
+      const failureAction = await promptFailureAction();
+      if (failureAction === "skip") {
+        term.dim(`Skipping step ${i + 1}.\n`);
+        stepDone = true;
+        continue;
+      }
+      if (failureAction === "quit") {
+        term(`Stopped at step ${i + 1}.\n`);
+        printRemainingCommands(commands, i + 1);
+        runner.close();
+        return;
+      }
+      // Self-heal: ask the model for a corrected command; it re-enters the
+      // normal run/edit/skip gate (including the blocklist check) above.
+      term.dim("Asking the model for a fix...\n");
+      const fix = await requestCommandFix(entry, result, config);
+      if (!fix) {
+        term("No usable fix was returned.\n");
+        continue;
+      }
+      if (fix.explanation) {
+        term.dim(`Suggested fix: ${fix.explanation}\n`);
+      }
+      entry.command = fix.command;
     }
-    term("\n");
   }
 
   runner.close();

@@ -114,9 +114,7 @@ export function buildDirectoryContext() {
 
 export function buildRunbookContext() {
   const shell =
-    os.platform() === "win32"
-      ? process.env.ComSpec || "cmd.exe"
-      : process.env.SHELL || "bash";
+    os.platform() === "win32" ? "powershell.exe" : process.env.SHELL || "bash";
   const user = os.userInfo().username;
   return [
     buildDirectoryContext(),

@@ -74,6 +74,16 @@ gac commit --dry-run  # print the message only, never commit
 
 `[e]` opens the message in `$EDITOR`. In a non-interactive shell `gac commit` prints the message and exits without committing.
 
+### Fixing a failed command
+
+```bash
+gac fix                          # fix the last command from shell history
+gac fix "tar -xvf archive"       # fix an explicit command
+mycmd 2>&1 | gac fix mycmd       # include the error output as context
+```
+
+gac proposes a corrected command with a one-line explanation, then `[Enter] run / [e] edit / [c] copy / [q] quit`. `[c]` copies via OSC 52 (works over SSH). Corrections matching the blocklist can't be run, only edited or copied. History lookup supports bash, zsh, and fish (note: bash only writes history on shell exit unless you use `history -a` in `PROMPT_COMMAND`).
+
 ### Runbooks
 
 `gac runbook` asks the model for a step-by-step command plan, then walks through it with per-step approval:
@@ -88,7 +98,8 @@ Command: npm install
 - `[e]` lets you edit the command before running it (fix paths, ports, placeholders).
 - `[s]` skips a step, `[q]` stops and prints the remaining plan.
 - Commands matching the blocklist (`blocked_commands.json`) cannot be run — only edited or skipped.
-- Steps run in a persistent shell on Linux/macOS (`cd` and environment persist). On Windows, steps run through `cmd.exe` with the working directory tracked across steps (`cd` works; `set` variables don't persist between steps).
+- When a step fails, gac offers `[r] ask the model for a fix` — the error output is sent back to the model and the corrected command re-enters the normal approval gate — alongside `[s] skip` and `[q] stop`.
+- Steps run in a persistent shell everywhere: your login shell on Linux/macOS, PowerShell on Windows — `cd` and environment variables persist across steps on both.
 
 Preview or export instead of executing:
 
@@ -113,7 +124,7 @@ Interactive mode:
 gac chat
 ```
 
-Exit chat with `exit`, `quit`, or Ctrl+C. Start a line with `"""` to enter multi-line input (finish with `"""` on its own line) — handy for pasting code. See `/help` inside chat for all commands (`/new`, `/sessions`, `/rename`, `/system`, `/clear`, `/retry`, `/export`).
+Exit chat with `exit`, `quit`, or Ctrl+C. Start a line with `"""` to enter multi-line input (finish with `"""` on its own line) — handy for pasting code. See `/help` inside chat for all commands (`/new`, `/sessions`, `/rename`, `/system`, `/model`, `/copy`, `/clear`, `/retry`, `/export`): `/model` switches models for the current session, and `/copy` copies the last code block (or the whole last reply) to your clipboard via OSC 52 — which works over SSH in most modern terminals.
 
 Long conversations are automatically trimmed to fit the model's context window — the full history stays saved in the session; only the request to the model drops the oldest turns (a notice is shown when that happens).
 
@@ -128,6 +139,22 @@ Flags (place them before the prompt — once the prompt starts, tokens like `-f`
 - `--debug-render` prints the raw model output after the rendered response.
 - `-V, --version` show version.
 - `-h, --help` show help.
+
+### Shell completions
+
+```bash
+# bash
+gac completions bash > ~/.local/share/bash-completion/completions/gac
+# (or add to ~/.bashrc:  eval "$(gac completions bash)")
+
+# zsh — with fpath+=(~/.zfunc) before compinit in ~/.zshrc
+gac completions zsh > ~/.zfunc/_gac
+
+# fish
+gac completions fish > ~/.config/fish/completions/gac.fish
+```
+
+Completes commands, flags, `config get/set/tui`, and file paths for `-f`/`--export`.
 
 ## Configuration
 

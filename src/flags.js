@@ -40,6 +40,8 @@ const COMMANDS = new Set([
   "models",
   "config",
   "commit",
+  "fix",
+  "completions",
   "-a",
 ]);
 
@@ -129,6 +131,8 @@ export function printHelp() {
   term(`  explain <prompt>  Explain a topic with examples\n`);
   term(`  runbook <prompt>  Step-by-step commands with approval gates\n`);
   term(`  commit            Generate a commit message from staged changes\n`);
+  term(`  fix [command]     Fix a failed shell command (defaults to the last\n`);
+  term(`                    command from shell history)\n`);
   term(`  chat              Interactive chat mode (""" starts multi-line input;\n`);
   term(`                    /help inside chat lists all commands)\n`);
   term(`  models            List models and set default\n`);
@@ -136,6 +140,7 @@ export function printHelp() {
   term(`  config tui        Open interactive config editor\n`);
   term(`  config get <key>  Print one config value\n`);
   term(`  config set <key> <value>  Update one config value\n`);
+  term(`  completions <shell>       Print completion script (bash/zsh/fish)\n`);
   term(`\n`);
   term(`Flags (place before the prompt; later tokens are prompt text):\n`);
   term(`  -f, --file <path>       Include a file as context (repeatable)\n`);
