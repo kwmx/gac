@@ -10,6 +10,9 @@ import { getConfigPath } from "./config.js";
 // Used when the backend does not report a context length and the user has not
 // configured one. Most current local models handle at least 8k tokens.
 export const FALLBACK_CONTEXT_TOKENS = 8192;
+// The Codex backend has no metadata endpoint; the GPT-5 family it serves
+// accepts ~272k input tokens. A numeric `contextWindow` config still wins.
+export const CODEX_CONTEXT_TOKENS = 272000;
 // Tokens reserved as slack between the estimated prompt size and the real one.
 export const TRIM_MARGIN_TOKENS = 256;
 const RESPONSE_MARGIN_TOKENS = 64;
@@ -138,6 +141,9 @@ async function fetchWithTimeout(url, options) {
 // Results are cached in-process and on disk (gac is a one-shot CLI, so the
 // disk cache is what actually prevents a probe per invocation).
 export async function detectContextWindow(config) {
+  if (config.provider === "codex") {
+    return CODEX_CONTEXT_TOKENS;
+  }
   const key = detectionKey(config);
   if (detectionCache.has(key)) return detectionCache.get(key);
 

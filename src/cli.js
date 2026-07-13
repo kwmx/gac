@@ -1,7 +1,9 @@
 import terminalKit from "terminal-kit";
 import process from "process";
-import { chatCompletion, listModels } from "./gpt4all.js";
+import { chatCompletion, listModels, getActiveModel, getActiveModelKey } from "./gpt4all.js";
 import { getConfigPath, loadConfig, setConfigValue, getConfigValue } from "./config.js";
+import { loginCodex, logoutCodex, codexAuthStatus } from "./codexauth.js";
+import { maskApiKey } from "./configtui.js";
 import { createMarkdownRenderer } from "./markdown.js";
 import { runChat } from "./chat.js";
 import { parseArgs, printHelp, getVersion } from "./flags.js";
@@ -114,7 +116,10 @@ async function runModels(config, interactive) {
   const menuModels = ["Keep current default", ...models];
   term("\nSelect a default model (use arrows + Enter, Esc to cancel):\n");
 
-  const currentIndex = Math.max(menuModels.indexOf(config.model), 0);
+  // Codex keeps its default in `codexModel` so provider switches stay free.
+  const modelKey = getActiveModelKey(config);
+  const activeModel = getActiveModel(config);
+  const currentIndex = Math.max(menuModels.indexOf(activeModel), 0);
   term.grabInput({ mouse: "button" });
   const cleanup = () => {
     term.grabInput(false);
@@ -143,17 +148,87 @@ async function runModels(config, interactive) {
         }
         const selected = menuModels[response.selectedIndex];
         if (selected === "Keep current default") {
-          term(`Default model unchanged ("${config.model}").\n`);
+          term(`Default model unchanged ("${activeModel}").\n`);
           resolve();
           return;
         }
-        setConfigValue("model", selected);
-        config.model = selected;
+        setConfigValue(modelKey, selected);
+        config[modelKey] = selected;
         term(`Default model set to "${selected}".\n`);
         resolve();
       }
     );
   });
+}
+
+function printAuthStatus(config) {
+  const status = codexAuthStatus();
+  term(`Provider: ${config.provider}\n`);
+  if (config.provider !== "codex") {
+    term(`API key: ${maskApiKey(config.apiKey)}\n`);
+  }
+  if (!status.signedIn) {
+    term("ChatGPT (Codex): not signed in. Run `gac auth login`.\n");
+    return;
+  }
+  term("ChatGPT (Codex): signed in");
+  if (status.email) term(` as ${status.email}`);
+  if (status.planType) term(` (${status.planType} plan)`);
+  term("\n");
+  term(`Credentials: ${status.source}\n`);
+  if (status.lastRefresh) term(`Last refreshed: ${status.lastRefresh}\n`);
+  if (config.provider !== "codex") {
+    term('Tip: switch to it with `gac config set provider codex`.\n');
+  }
+}
+
+async function runAuthCommand(args, config) {
+  const sub = args[0] || "status";
+
+  if (sub === "login") {
+    try {
+      const status = await loginCodex({ notify: (message) => term(message) });
+      term("\nSigned in");
+      if (status.email) term(` as ${status.email}`);
+      if (status.planType) term(` (${status.planType} plan)`);
+      term(".\n");
+      if (config.provider !== "codex") {
+        term(
+          'To use it, switch the provider: `gac config set provider codex` (or via `gac config tui`).\n'
+        );
+      }
+    } catch (err) {
+      term(`Error: ${err.message}\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (sub === "logout") {
+    let result;
+    try {
+      result = logoutCodex();
+    } catch (err) {
+      term(`Error: ${err.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    term(result.removed ? "Signed out of ChatGPT.\n" : "No gac ChatGPT credentials were stored.\n");
+    if (result.codexCliAuthPresent) {
+      term(
+        "Note: a Codex CLI login (~/.codex/auth.json) is still present and will be reused. Run `codex logout` to remove it too.\n"
+      );
+    }
+    return;
+  }
+
+  if (sub === "status") {
+    printAuthStatus(config);
+    return;
+  }
+
+  term(`Unknown auth subcommand "${sub}". Usage: gac auth <login|logout|status>\n`);
+  process.exitCode = 1;
 }
 
 async function runConfigCommand(args, config, interactive) {
@@ -257,6 +332,11 @@ export async function runCli(argv) {
 
   if (command === "config") {
     await runConfigCommand(rest, config, interactive);
+    return;
+  }
+
+  if (command === "auth") {
+    await runAuthCommand(rest, config);
     return;
   }
 

@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { chatCompletion, listModels } from "./gpt4all.js";
+import { chatCompletion, listModels, getActiveModel, getActiveModelKey } from "./gpt4all.js";
 import { createMarkdownRenderer } from "./markdown.js";
 import { copyToClipboard, extractLastCodeBlock } from "./tui.js";
 import {
@@ -115,7 +115,7 @@ function formatSessionLabel(s) {
 function printChatHeader(session, config, contextWindow) {
   const title = ` Chat: ${session.name} `;
   const ctx = contextWindow ? ` · ctx ${contextWindow}` : "";
-  const model = ` model: ${config.model}${ctx} `;
+  const model = ` model: ${getActiveModel(config)}${ctx} `;
   const fill = hr("─", Math.max(0, tw() - title.length - model.length));
   term.bold.brightCyan(title);
   term.dim(`${fill}${model}\n`);
@@ -315,7 +315,7 @@ async function sessionPicker(config) {
     const sessions = listSessions();
 
     term.bold.cyan("\n gac chat\n");
-    term.dim(` model: ${config.model}\n`);
+    term.dim(` model: ${getActiveModel(config)}\n`);
     term(`${hr()}\n`);
 
     const NEW_ITEM = "  + New chat";
@@ -573,14 +573,15 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       term.dim("\n  Select a model for this session:\n");
       const idx = await menuSelect(
         models.map((m) => `  ${m}`),
-        { selectedIndex: Math.max(models.indexOf(config.model), 0) }
+        { selectedIndex: Math.max(models.indexOf(getActiveModel(config)), 0) }
       );
       if (idx === null) continue;
-      config.model = models[idx];
+      // Codex keeps its own model key so provider switches stay independent.
+      config[getActiveModelKey(config)] = models[idx];
       // The new model may have a different context window.
       contextWindow = await resolveContextWindow(config);
       term.dim(
-        `  Model set to ${config.model} for this session. Use \`gac models\` to change the default.\n\n`
+        `  Model set to ${getActiveModel(config)} for this session. Use \`gac models\` to change the default.\n\n`
       );
       printChatHeader(session, config, contextWindow);
       term(`${hr()}\n`);
@@ -682,7 +683,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     if (input === "/export") {
       try {
         // Attach model name for export metadata
-        session.model = config.model;
+        session.model = getActiveModel(config);
         const outPath = exportChat(session);
         term.dim(`  Exported to: `);
         term.brightCyan(`${outPath}\n\n`);

@@ -39,6 +39,7 @@ const COMMANDS = new Set([
   "chat",
   "models",
   "config",
+  "auth",
   "commit",
   "fix",
   "completions",
@@ -124,7 +125,7 @@ export function parseArgs(argv) {
 }
 
 export function printHelp() {
-  term(`gac ${getVersion()} - OpenAI-compatible & Ollama CLI\n\n`);
+  term(`gac ${getVersion()} - OpenAI-compatible, Ollama & ChatGPT Codex CLI\n\n`);
   term(`Commands:\n`);
   term(`  ask <prompt>      Answer a question (alias: -a <prompt>)\n`);
   term(`  suggest <prompt>  Suggest commands for a task\n`);
@@ -140,6 +141,9 @@ export function printHelp() {
   term(`  config tui        Open interactive config editor\n`);
   term(`  config get <key>  Print one config value\n`);
   term(`  config set <key> <value>  Update one config value\n`);
+  term(`  auth login        Sign in with your ChatGPT account (Codex provider)\n`);
+  term(`  auth status       Show connection/sign-in status\n`);
+  term(`  auth logout       Remove stored ChatGPT credentials\n`);
   term(`  completions <shell>       Print completion script (bash/zsh/fish)\n`);
   term(`\n`);
   term(`Flags (place before the prompt; later tokens are prompt text):\n`);

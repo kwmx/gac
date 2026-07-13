@@ -12,6 +12,7 @@ const COMMANDS = [
   ["chat", "Interactive chat mode"],
   ["models", "List models and set default"],
   ["config", "View or edit configuration"],
+  ["auth", "Sign in/out of ChatGPT (Codex provider)"],
   ["completions", "Print a shell completion script"],
 ];
 
@@ -28,6 +29,7 @@ const FLAGS = [
 ];
 
 const CONFIG_SUBCOMMANDS = ["get", "set", "tui"];
+const AUTH_SUBCOMMANDS = ["login", "logout", "status"];
 const SHELLS = ["bash", "zsh", "fish"];
 
 function allFlagTokens() {
@@ -61,6 +63,9 @@ export function buildBashCompletion() {
     "  fi",
     '  if [ "$prev" = "config" ]; then',
     `    COMPREPLY=($(compgen -W "${CONFIG_SUBCOMMANDS.join(" ")}" -- "$cur")); return`,
+    "  fi",
+    '  if [ "$prev" = "auth" ]; then',
+    `    COMPREPLY=($(compgen -W "${AUTH_SUBCOMMANDS.join(" ")}" -- "$cur")); return`,
     "  fi",
     '  if [ "$prev" = "completions" ]; then',
     `    COMPREPLY=($(compgen -W "${SHELLS.join(" ")}" -- "$cur")); return`,
@@ -104,6 +109,7 @@ export function buildZshCompletion() {
     "    args)",
     "      case $words[1] in",
     `        config) _values 'config' ${CONFIG_SUBCOMMANDS.join(" ")} ;;`,
+    `        auth) _values 'auth' ${AUTH_SUBCOMMANDS.join(" ")} ;;`,
     `        completions) _values 'shell' ${SHELLS.join(" ")} ;;`,
     "      esac ;;",
     "  esac",
@@ -124,6 +130,9 @@ export function buildFishCompletion() {
   }
   for (const sub of CONFIG_SUBCOMMANDS) {
     lines.push(`complete -c gac -n "__fish_seen_subcommand_from config" -a "${sub}"`);
+  }
+  for (const sub of AUTH_SUBCOMMANDS) {
+    lines.push(`complete -c gac -n "__fish_seen_subcommand_from auth" -a "${sub}"`);
   }
   for (const shell of SHELLS) {
     lines.push(`complete -c gac -n "__fish_seen_subcommand_from completions" -a "${shell}"`);
