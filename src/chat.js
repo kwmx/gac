@@ -3,8 +3,14 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { chatCompletion } from "./gpt4all.js";
+import { chatCompletion, listModels } from "./gpt4all.js";
 import { createMarkdownRenderer } from "./markdown.js";
+import { copyToClipboard, extractLastCodeBlock } from "./tui.js";
+import {
+  resolveContextWindow,
+  contextBudget,
+  trimMessagesToBudget,
+} from "./contextwindow.js";
 
 const { terminal: term } = terminalKit;
 
@@ -106,16 +112,17 @@ function formatSessionLabel(s) {
   return `${name.padEnd(maxName + 2)}${info}`;
 }
 
-function printChatHeader(session, config) {
+function printChatHeader(session, config, contextWindow) {
   const title = ` Chat: ${session.name} `;
-  const model = ` model: ${config.model} `;
+  const ctx = contextWindow ? ` · ctx ${contextWindow}` : "";
+  const model = ` model: ${config.model}${ctx} `;
   const fill = hr("─", Math.max(0, tw() - title.length - model.length));
   term.bold.brightCyan(title);
   term.dim(`${fill}${model}\n`);
 }
 
 function printCommandsHint() {
-  const commands = ["/help", "/new", "/sessions", "/rename", "/system", "/clear", "/retry", "/export", "exit"];
+  const commands = ["/help", "/new", "/sessions", "/model", "/copy", "/retry", "/export", "exit"];
   const line = commands.join("  ");
   if (line.length + 1 <= tw()) {
     term.dim(` ${line}\n`);
@@ -157,7 +164,7 @@ function printHistory(session, config) {
 // AI title generation
 // ─────────────────────────────────────────────────────────────────
 
-async function generateAiTitle(userMsg, aiMsg, config) {
+async function generateAiTitle(userMsg, aiMsg, config, contextWindow) {
   try {
     const titleConfig = { ...config, stream: false, renderMarkdown: false, maxTokens: 12 };
     const msgs = [
@@ -171,7 +178,7 @@ async function generateAiTitle(userMsg, aiMsg, config) {
         content: `User: "${userMsg.slice(0, 300)}"\nAI: "${aiMsg.slice(0, 300)}"`,
       },
     ];
-    const raw = await chatCompletion(titleConfig, msgs);
+    const raw = await chatCompletion(titleConfig, msgs, { contextWindow });
     const title = (raw || "")
       .trim()
       .replace(/^["']|["'.,!?]$/g, "")
@@ -363,6 +370,9 @@ async function sessionPicker(config) {
 
 // Returns { action: "exit"|"picker"|"new" }
 async function runChatSession(session, config, defaultSystemPrompt) {
+  // Resolved once per session (and again on /model switches); detection
+  // results are cached per model, so this is at most one cheap probe.
+  let contextWindow = await resolveContextWindow(config);
   const effectiveSystemPrompt = session.customSystemPrompt ?? defaultSystemPrompt;
 
   // Build the live messages array
@@ -385,7 +395,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
 
   const drawScreen = () => {
     term.clear();
-    printChatHeader(session, config);
+    printChatHeader(session, config, contextWindow);
     term(`${hr()}\n`);
     printCommandsHint();
     term("\n");
@@ -420,7 +430,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
 
   while (true) {
     term.bold.brightBlue("You ▶ ");
-    const input = await new Promise((resolve) => {
+    let input = await new Promise((resolve) => {
       term.inputField(
         { cancelable: true, history: [...inputHistory] },
         (error, val) => {
@@ -429,6 +439,27 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         }
       );
     });
+
+    // Multi-line input: a line starting with """ collects lines verbatim
+    // until a closing """ on its own line. A line that already contains its
+    // own closing """ is an ordinary message and is sent as-is.
+    if (input.startsWith('"""') && !input.slice(3).includes('"""')) {
+      const first = input.slice(3).trim();
+      const collected = first ? [first] : [];
+      term.dim('  Multi-line input — finish with """ on its own line.\n');
+      while (true) {
+        term.dim("... ");
+        const line = await new Promise((resolve) => {
+          term.inputField({ cancelable: true }, (error, val) => {
+            term("\n");
+            resolve(error || val === undefined || val === null ? '"""' : val);
+          });
+        });
+        if (line.trim() === '"""') break;
+        collected.push(line);
+      }
+      input = collected.join("\n").trim();
+    }
 
     if (!input) continue;
 
@@ -443,9 +474,12 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         ["/sessions",      "Return to session picker"],
         ["/rename [name]", "Rename this chat"],
         ["/system",        "View or set the system prompt"],
+        ["/model",         "Switch models for this session"],
+        ["/copy",          "Copy the last code block to the clipboard"],
         ["/clear",         "Wipe history in this chat"],
         ["/retry",         "Regenerate the last AI response"],
         ["/export",        "Save conversation to a Markdown file"],
+        ['"""',            "Start multi-line input (end with \"\"\" on its own line)"],
         ["exit / quit",    "Exit gac chat"],
       ];
       for (const [cmd, desc] of cmds) {
@@ -480,7 +514,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         session.autoNamed = true;
         saveSession(session);
         term("\n");
-        printChatHeader(session, config);
+        printChatHeader(session, config, contextWindow);
         term(`${hr()}\n`);
         printCommandsHint();
         term("\n");
@@ -524,6 +558,53 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       continue;
     }
 
+    if (input === "/model") {
+      let models;
+      try {
+        models = await listModels(config);
+      } catch (err) {
+        term.red(`  Could not list models: ${err.message}\n\n`);
+        continue;
+      }
+      if (!models.length) {
+        term.dim("  No models found from the configured provider.\n\n");
+        continue;
+      }
+      term.dim("\n  Select a model for this session:\n");
+      const idx = await menuSelect(
+        models.map((m) => `  ${m}`),
+        { selectedIndex: Math.max(models.indexOf(config.model), 0) }
+      );
+      if (idx === null) continue;
+      config.model = models[idx];
+      // The new model may have a different context window.
+      contextWindow = await resolveContextWindow(config);
+      term.dim(
+        `  Model set to ${config.model} for this session. Use \`gac models\` to change the default.\n\n`
+      );
+      printChatHeader(session, config, contextWindow);
+      term(`${hr()}\n`);
+      printCommandsHint();
+      term("\n");
+      continue;
+    }
+
+    if (input === "/copy") {
+      const lastAi = [...messages].reverse().find((m) => m.role === "assistant");
+      if (!lastAi) {
+        term.dim("  Nothing to copy yet.\n\n");
+        continue;
+      }
+      const block = extractLastCodeBlock(lastAi.content);
+      copyToClipboard(block ?? lastAi.content.trim());
+      term.dim(
+        block
+          ? "  Copied the last code block to the clipboard.\n\n"
+          : "  No code block found — copied the whole reply.\n\n"
+      );
+      continue;
+    }
+
     if (input === "/delete") {
       cleanupInput();
       deleteSession(session.id);
@@ -554,10 +635,19 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       const [previousReply] = messages.splice(lastAiIdx, 1);
       session.messages = [...messages];
       term.dim("  Retrying…\n");
+      const retryTrim = trimMessagesToBudget(
+        messages,
+        contextBudget(contextWindow, config.maxTokens)
+      );
+      if (retryTrim.dropped > 0) {
+        term.dim(
+          `  (trimmed ${retryTrim.dropped} earlier message${retryTrim.dropped === 1 ? "" : "s"} to fit the context window)\n`
+        );
+      }
       term.bold.brightGreen("AI  ◀ ");
       let retryReply;
       try {
-        retryReply = await chatCompletion(config, messages);
+        retryReply = await chatCompletion(config, retryTrim.messages, { contextWindow });
       } catch (err) {
         // Restore the previous reply so a failed retry doesn't lose it.
         messages.splice(lastAiIdx, 0, previousReply);
@@ -578,6 +668,13 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         messages.push({ role: "assistant", content: retryReply });
         session.messages = [...messages];
         saveSession(session);
+      } else {
+        // An empty regeneration must not destroy the answer it was meant to
+        // replace — put the previous reply back.
+        messages.splice(lastAiIdx, 0, previousReply);
+        session.messages = [...messages];
+        saveSession(session);
+        term.dim("  Retry returned nothing; keeping the previous reply.\n\n");
       }
       continue;
     }
@@ -599,11 +696,23 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     messages.push({ role: "user", content: input });
     inputHistory.push(input);
 
+    // The full history stays in the session; only the request is trimmed to
+    // fit the model's context window.
+    const trimmed = trimMessagesToBudget(
+      messages,
+      contextBudget(contextWindow, config.maxTokens)
+    );
+    if (trimmed.dropped > 0) {
+      term.dim(
+        `  (trimmed ${trimmed.dropped} earlier message${trimmed.dropped === 1 ? "" : "s"} to fit the context window)\n`
+      );
+    }
+
     term.bold.brightGreen("AI  ◀ ");
 
     let reply;
     try {
-      reply = await chatCompletion(config, messages);
+      reply = await chatCompletion(config, trimmed.messages, { contextWindow });
     } catch (err) {
       term.red(`\nError: ${err.message}\n\n`);
       messages.pop();
@@ -637,13 +746,13 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       // Generate and apply title after the first exchange (awaited to avoid
       // concurrent requests to the LLM server, which often handles only one at a time)
       if (!session.autoNamed && messages.filter((m) => m.role === "user").length === 1) {
-        const title = await generateAiTitle(input, reply, config);
+        const title = await generateAiTitle(input, reply, config, contextWindow);
         if (title) {
           session.name = title;
           session.autoNamed = true;
           saveSession(session);
           term("\n");
-          printChatHeader(session, config);
+          printChatHeader(session, config, contextWindow);
           term(`${hr()}\n`);
           printCommandsHint();
           term("\n");

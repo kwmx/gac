@@ -1,6 +1,6 @@
 # GAC CLI (gac)
 
-Terminal client for OpenAI-compatible APIs (including GPT4All) and Ollama. Supports streaming responses, interactive chat, and configurable markdown rendering using `terminal-kit`.
+Terminal client for OpenAI-compatible APIs (including GPT4All) and Ollama. Supports streaming responses, interactive chat with saved sessions, piped input, AI-generated commit messages, step-by-step runbooks with approval gates, and configurable markdown rendering (tables and syntax highlighting included) using `terminal-kit`.
 
 ## Installation
 
@@ -36,13 +36,87 @@ gac suggest -d "Give me step-by-step instructions to set up an SSH server on por
 gac runbook "Set up a new Node.js project with eslint"
 ```
 
+### Piped input
+
+Anything piped into gac is attached to the prompt as input — or used as the prompt itself when no prompt is given:
+
+```bash
+cat error.log | gac explain "why is this failing?"
+git diff | gac ask "summarize these changes"
+dmesg | tail -50 | gac "anything wrong here?"
+echo "how do I list open ports" | gac
+```
+
+When gac's output is piped or redirected, it automatically switches to plain text (no colors, no markdown styling), so it composes with `less`, `grep`, files, and scripts.
+
+Note: piped input is read until the producer closes the pipe, so don't pipe endless streams (`tail -f ... | gac` will wait forever — use `tail -n 50` instead).
+
+### File context
+
+Include files as context with `-f`/`--file` (repeatable):
+
+```bash
+gac explain -f src/app.js "what does this file do?"
+gac ask -f package.json -f src/cli.js "why might the build fail?"
+```
+
+Oversized input (piped or file) is automatically truncated head-and-tail to fit the model's context window.
+
+### Commit messages
+
+Generate a commit message from your staged changes:
+
+```bash
+git add -p
+gac commit            # propose, then [Enter] commit / [e] edit / [r] regenerate / [q] quit
+gac commit --dry-run  # print the message only, never commit
+```
+
+`[e]` opens the message in `$EDITOR`. In a non-interactive shell `gac commit` prints the message and exits without committing.
+
+### Fixing a failed command
+
+```bash
+gac fix                          # fix the last command from shell history
+gac fix "tar -xvf archive"       # fix an explicit command
+mycmd 2>&1 | gac fix mycmd       # include the error output as context
+```
+
+gac proposes a corrected command with a one-line explanation, then `[Enter] run / [e] edit / [c] copy / [q] quit`. `[c]` copies via OSC 52 (works over SSH). Corrections matching the blocklist can't be run, only edited or copied. History lookup supports bash, zsh, and fish (note: bash only writes history on shell exit unless you use `history -a` in `PROMPT_COMMAND`).
+
+### Runbooks
+
+`gac runbook` asks the model for a step-by-step command plan, then walks through it with per-step approval:
+
+```text
+Step 1 of 3:
+Install dependencies
+Command: npm install
+[Enter] run  [e] edit  [s] skip  [q] quit:
+```
+
+- `[e]` lets you edit the command before running it (fix paths, ports, placeholders).
+- `[s]` skips a step, `[q]` stops and prints the remaining plan.
+- Commands matching the blocklist (`blocked_commands.json`) cannot be run — only edited or skipped.
+- When a step fails, gac offers `[r] ask the model for a fix` — the error output is sent back to the model and the corrected command re-enters the normal approval gate — alongside `[s] skip` and `[q] stop`.
+- Steps run in a persistent shell everywhere: your login shell on Linux/macOS, PowerShell on Windows — `cd` and environment variables persist across steps on both.
+
+Preview or export instead of executing:
+
+```bash
+gac runbook --dry-run "Install docker"           # print the plan, run nothing
+gac runbook --export setup.sh "Install docker"   # write an executable script (also .ps1 / .bat)
+```
+
+Exported scripts comment out blocked commands with the reason.
+
 List models and set a default:
 
 ```bash
 gac models
 ```
 
-This opens an interactive selector. Use arrow keys + Enter to choose a model, or Ctrl+C/Esc to cancel.
+This opens an interactive selector. Use arrow keys + Enter to choose a model, or Ctrl+C/Esc to cancel. In a non-interactive shell it just prints the list.
 
 Interactive mode:
 
@@ -50,14 +124,37 @@ Interactive mode:
 gac chat
 ```
 
-Exit chat with `exit`, `quit`, or Ctrl+C.
+Exit chat with `exit`, `quit`, or Ctrl+C. Start a line with `"""` to enter multi-line input (finish with `"""` on its own line) — handy for pasting code. See `/help` inside chat for all commands (`/new`, `/sessions`, `/rename`, `/system`, `/model`, `/copy`, `/clear`, `/retry`, `/export`): `/model` switches models for the current session, and `/copy` copies the last code block (or the whole last reply) to your clipboard via OSC 52 — which works over SSH in most modern terminals.
 
-Flags:
+Long conversations are automatically trimmed to fit the model's context window — the full history stays saved in the session; only the request to the model drops the oldest turns (a notice is shown when that happens).
 
-- `--no-render` disables markdown styling for that run.
-- `--debug-render` prints the raw model output after the rendered response.
+Flags (place them before the prompt — once the prompt starts, tokens like `-f` are treated as prompt text, so `gac ask what does -f mean in tar` works):
+
+- `-f, --file <path>` include a file as context (repeatable).
 - `-d, --detailed-suggest` enable more detailed, step-by-step suggestions in `suggest` mode (can also be set via config key `detailedSuggest`).
 - `--detailed-context` include current directory context in `suggest`/`explain` prompts (can also be set via config key `detailedContext`).
+- `--dry-run` runbook/commit: show the result, execute nothing.
+- `--export <path>` runbook: write the plan to a script instead of running it.
+- `--no-render` disables markdown styling for that run.
+- `--debug-render` prints the raw model output after the rendered response.
+- `-V, --version` show version.
+- `-h, --help` show help.
+
+### Shell completions
+
+```bash
+# bash
+gac completions bash > ~/.local/share/bash-completion/completions/gac
+# (or add to ~/.bashrc:  eval "$(gac completions bash)")
+
+# zsh — with fpath+=(~/.zfunc) before compinit in ~/.zshrc
+gac completions zsh > ~/.zfunc/_gac
+
+# fish
+gac completions fish > ~/.config/fish/completions/gac.fish
+```
+
+Completes commands, flags, `config get/set/tui`, and file paths for `-f`/`--export`.
 
 ## Configuration
 
@@ -87,13 +184,15 @@ gac config set detailedContext true
 - `apiKey` (string): API key for OpenAI-compatible services (empty for local servers)
 - `model` (string): model ID from `/v1/models`
 - `temperature` (number)
-- `maxTokens` (number)
+- `maxTokens` (number): response token cap (default `2048`). Automatically reduced per request when the prompt leaves less room in the context window.
+- `contextWindow` (`"auto"` or number): size of the model's context window in tokens. `"auto"` (default) asks the backend — Ollama via `/api/show`, OpenAI-compatible servers via context metadata in `/v1/models` (LM Studio, OpenRouter, and others expose it). Set a number to pin it manually; detection failures fall back to a conservative 8192. This drives chat-history trimming, input truncation, and Ollama's `num_ctx` (sized to the conversation, so large-context models don't waste memory on short chats).
 - `stream` (boolean)
 - `requestTimeoutMs` (number): request timeout in milliseconds (0 to disable). Useful for larger models or slower servers.
 - `defaultAction` (string): default mode for direct prompts (`suggest`, `ask`, or `explain`).
 - `detailedSuggest` (boolean): when `true`, `suggest` mode returns more detailed, step-by-step suggestions.
 - `detailedContext` (boolean): when `true`, `suggest`/`explain` prompts include the current directory and `ls` output.
 - `renderMarkdown` (boolean)
+- `showThinking` (boolean, default `true`): stream the model's `<think>` reasoning as dim text while it thinks, then erase it and show only the answer. Automatically disabled when output is piped.
 
 ### Markdown styling
 
@@ -111,6 +210,10 @@ All markdown options live under `markdownStyles`:
 - `codeBorderStyle` (array of styles)
 - `codeGutter` (string)
 - `codeBorderChars` (object: `topLeft`, `top`, `topRight`, `bottomLeft`, `bottom`, `bottomRight`)
+- `syntaxHighlight` (boolean, default `true`): per-token highlighting inside fenced code blocks (JavaScript/TypeScript, Python, Bash, Go, Rust, C/C++, Java, SQL, Ruby, PHP, JSON, YAML)
+- `syntaxStyles` (object: `keyword`, `string`, `comment`, `number` → array of styles)
+- `tableBorderStyle` (array of styles): markdown tables render as aligned columns with box-drawing separators
+- `tableHeaderStyles` (array of styles)
 
 Style values can be:
 
@@ -136,7 +239,13 @@ Example:
     "headerUnderlineLevels": [1],
     "codeStyles": ["#8be9fd"],
     "codeBackground": ["bg:default"],
-    "codeBorderStyle": ["#444444"]
+    "codeBorderStyle": ["#444444"],
+    "syntaxStyles": {
+      "keyword": ["#ff79c6"],
+      "string": ["#f1fa8c"],
+      "comment": ["dim"],
+      "number": ["#bd93f9"]
+    }
   }
 }
 ```
@@ -162,4 +271,4 @@ GNU General Public License v3.0. See `LICENSE`.
 ## Disclaimer
 
 This was mostly vibe coded and I'm treating it as a fun side project / tool that is likely to remain improved and updated by agentic models.
-Some notes on ```runbook``` the command is kinda dangerous i tried adding some guard rails by making a list of blocked commands. However, please be responsible and keep in mind that the model may return some commands that need editing and the program will just execute these commands one by one without checking for any values or changes it should make before
+Some notes on `runbook`: commands come from a language model, so review every step before approving it. Guard rails exist — a blocklist of destructive patterns (`blocked_commands.json`), per-step `[Enter] run / [e] edit / [s] skip / [q] quit` gates, and `--dry-run`/`--export` for previewing without executing — but you are the final check. Blocked commands can't be run from the prompt, only edited or skipped.

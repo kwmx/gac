@@ -13,6 +13,12 @@ const ANSI = {
   brightWhite: '\x1b[97m'
 };
 
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+
+function visibleWidth(text) {
+  return String(text).replace(ANSI_PATTERN, '').length;
+}
+
 function parseHexColor(token) {
   if (!token) return null;
   const raw = token.replace(/^#/, '');
@@ -124,7 +130,16 @@ const DEFAULT_STYLES = {
     bottomLeft: '└',
     bottom: '─',
     bottomRight: '┘'
-  }
+  },
+  syntaxHighlight: true,
+  syntaxStyles: {
+    keyword: ['brightWhite', 'bold'],
+    string: ['brightGreen'],
+    comment: ['dim'],
+    number: ['brightYellow']
+  },
+  tableBorderStyle: ['dim'],
+  tableHeaderStyles: ['bold']
 };
 
 function normalizeStyles(styles) {
@@ -143,6 +158,10 @@ function mergeStyles(options) {
     headerStylesByLevel: {
       ...DEFAULT_STYLES.headerStylesByLevel,
       ...(options && options.headerStylesByLevel ? options.headerStylesByLevel : {})
+    },
+    syntaxStyles: {
+      ...DEFAULT_STYLES.syntaxStyles,
+      ...(options && options.syntaxStyles ? options.syntaxStyles : {})
     }
   };
 }
@@ -161,8 +180,187 @@ function applyInlineMarkdown(text) {
   return output;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Syntax highlighting (line-based, best-effort)
+// ─────────────────────────────────────────────────────────────────
+
+const LANG_ALIASES = {
+  js: 'javascript', jsx: 'javascript', ts: 'javascript', tsx: 'javascript',
+  mjs: 'javascript', cjs: 'javascript', javascript: 'javascript',
+  typescript: 'javascript', node: 'javascript',
+  py: 'python', python: 'python',
+  sh: 'bash', bash: 'bash', zsh: 'bash', shell: 'bash', console: 'bash',
+  go: 'go', golang: 'go',
+  rs: 'rust', rust: 'rust',
+  c: 'c', h: 'c', cpp: 'c', cc: 'c', hpp: 'c', 'c++': 'c',
+  java: 'java',
+  sql: 'sql',
+  json: 'json',
+  yaml: 'yaml', yml: 'yaml',
+  rb: 'ruby', ruby: 'ruby',
+  php: 'php'
+};
+
+// comment: 'hash' (# ...), 'slash' (// ...), 'dash' (-- ...), or null.
+const LANG_DEFS = {
+  javascript: {
+    comment: 'slash',
+    keywords:
+      'const let var function return if else for while do class extends import export from new async await try catch finally throw switch case break continue default typeof instanceof of in yield static delete void null undefined true false this super'
+  },
+  python: {
+    comment: 'hash',
+    keywords:
+      'def return if elif else for while class import from as with try except finally raise pass break continue lambda global nonlocal yield assert del not and or in is None True False async await'
+  },
+  bash: {
+    comment: 'hash',
+    keywords:
+      'if then else elif fi for while until do done case esac function in select time echo exit return local export set unset readonly shift source alias cd sudo true false'
+  },
+  go: {
+    comment: 'slash',
+    keywords:
+      'func return if else for range switch case break continue default fallthrough package import type struct interface map chan go defer select var const nil true false'
+  },
+  rust: {
+    comment: 'slash',
+    keywords:
+      'fn return if else for while loop match impl trait struct enum use mod pub let mut const static ref crate self super move async await dyn where type unsafe true false'
+  },
+  c: {
+    comment: 'slash',
+    keywords:
+      'int char long short float double void unsigned signed struct union enum typedef const static extern return if else for while do switch case break continue default sizeof goto volatile inline include define ifdef ifndef endif NULL true false class public private protected new delete namespace using template virtual bool auto'
+  },
+  java: {
+    comment: 'slash',
+    keywords:
+      'public private protected class interface extends implements return if else for while do switch case break continue default new static final void int long double float boolean char byte short import package try catch finally throw throws this super null true false var record enum'
+  },
+  sql: {
+    comment: 'dash',
+    caseInsensitive: true,
+    keywords:
+      'select from where insert into values update set delete create table drop alter add index view join inner left right outer on as and or not null primary key foreign references group by order having limit offset distinct union all exists between like in is count sum avg min max'
+  },
+  ruby: {
+    comment: 'hash',
+    keywords:
+      'def end return if elsif else unless for while until do class module require include attr_accessor puts print lambda proc yield begin rescue ensure raise break next case when then nil true false self'
+  },
+  php: {
+    comment: 'slash',
+    keywords:
+      'function return if else elseif for foreach while do switch case break continue default class extends implements new echo print public private protected static const var use namespace try catch finally throw null true false as require include'
+  },
+  json: { comment: null, keywords: 'true false null' },
+  yaml: { comment: 'hash', keywords: 'true false null' }
+};
+
+const COMMENT_PATTERNS = {
+  // Hash comments must not fire on things like ${#var} or $#.
+  hash: '(?<=^|\\s)#.*$',
+  // Slash comments must not fire inside URLs (http://...).
+  slash: '(?<!:)\\/\\/.*$',
+  dash: '--.*$'
+};
+
+const STRING_PATTERN = '"(?:[^"\\\\]|\\\\.)*"?|\'(?:[^\'\\\\]|\\\\.)*\'?|`(?:[^`\\\\]|\\\\.)*`?';
+const NUMBER_PATTERN = '\\b0[xX][0-9a-fA-F]+\\b|\\b\\d+(?:\\.\\d+)?\\b';
+
+const matcherCache = new Map();
+
+function getLangMatcher(lang) {
+  const canonical = LANG_ALIASES[String(lang || '').toLowerCase()] || null;
+  const cacheKey = canonical || '(generic)';
+  if (matcherCache.has(cacheKey)) return matcherCache.get(cacheKey);
+
+  const def = canonical ? LANG_DEFS[canonical] : { comment: null, keywords: '' };
+  const parts = [];
+  const types = [];
+  if (def.comment && COMMENT_PATTERNS[def.comment]) {
+    parts.push(COMMENT_PATTERNS[def.comment]);
+    types.push('comment');
+  }
+  parts.push(STRING_PATTERN);
+  types.push('string');
+  parts.push(NUMBER_PATTERN);
+  types.push('number');
+  if (def.keywords) {
+    const words = def.keywords.split(/\s+/).filter(Boolean).join('|');
+    parts.push(`\\b(?:${words})\\b`);
+    types.push('keyword');
+  }
+  const flags = def.caseInsensitive ? 'gim' : 'gm';
+  const matcher = {
+    regex: new RegExp(parts.map((part) => `(${part})`).join('|'), flags),
+    types
+  };
+  matcherCache.set(cacheKey, matcher);
+  return matcher;
+}
+
+// Split one line of code into typed fragments: 'code' (unstyled base),
+// 'comment', 'string', 'number', or 'keyword'. Line-based by design, so
+// multi-line strings and block comments are highlighted best-effort.
+export function highlightCodeLine(line, lang) {
+  const text = String(line ?? '');
+  if (!text) return [];
+  const { regex, types } = getLangMatcher(lang);
+  regex.lastIndex = 0;
+  const fragments = [];
+  let cursor = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > cursor) {
+      fragments.push({ text: text.slice(cursor, match.index), type: 'code' });
+    }
+    let type = 'code';
+    for (let i = 0; i < types.length; i += 1) {
+      if (match[i + 1] !== undefined) {
+        type = types[i];
+        break;
+      }
+    }
+    fragments.push({ text: match[0], type });
+    cursor = match.index + match[0].length;
+    if (match[0].length === 0) regex.lastIndex += 1;
+  }
+  if (cursor < text.length) {
+    fragments.push({ text: text.slice(cursor), type: 'code' });
+  }
+  return fragments;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Tables
+// ─────────────────────────────────────────────────────────────────
+
+export function isTableRow(line) {
+  const trimmed = String(line ?? '').trim();
+  return trimmed.length > 2 && trimmed.startsWith('|') && trimmed.endsWith('|');
+}
+
+export function isTableSeparator(line) {
+  return /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(String(line ?? ''));
+}
+
+function splitTableCells(line) {
+  const trimmed = String(line).trim().replace(/^\|/, '').replace(/\|$/, '');
+  return trimmed.split('|').map((cell) => cell.trim());
+}
+
+function parseAlignment(cell) {
+  const left = cell.startsWith(':');
+  const right = cell.endsWith(':');
+  if (left && right) return 'center';
+  if (right) return 'right';
+  return 'left';
+}
+
 function matchFence(line) {
-  const match = line.match(/^\s*(?:[-*+]\s+|\d+\.\s+)?(```|~~~)\s*([A-Za-z0-9_-]+)?\s*$/);
+  const match = line.match(/^\s*(?:[-*+]\s+|\d+\.\s+)?(```|~~~)\s*([A-Za-z0-9_+-]+)?\s*$/);
   if (!match) return null;
   return { fence: match[1], lang: (match[2] || '').toLowerCase() };
 }
@@ -173,9 +371,11 @@ export function createMarkdownRenderer(options = {}) {
     inCodeBlock: false,
     inIndentedCode: false,
     fenceType: null,
+    codeLang: null,
     prevBlank: true,
     markdownWrapper: false,
-    wrapperFenceType: null
+    wrapperFenceType: null,
+    tableBuffer: []
   };
 
   function headerStylesForLevel(level) {
@@ -205,8 +405,88 @@ export function createMarkdownRenderer(options = {}) {
 
   function renderCodeLine(line) {
     const prefix = applyStyle(normalizeStyles(styles.codeBorderStyle), styles.codeGutter);
-    const codeStyles = [...normalizeStyles(styles.codeBackground), ...normalizeStyles(styles.codeStyles)];
-    return `${prefix}${applyStyle(codeStyles, line)}`;
+    const baseStyles = [...normalizeStyles(styles.codeBackground), ...normalizeStyles(styles.codeStyles)];
+    if (styles.syntaxHighlight === false) {
+      return `${prefix}${applyStyle(baseStyles, line)}`;
+    }
+    const background = normalizeStyles(styles.codeBackground);
+    const body = highlightCodeLine(line, state.codeLang)
+      .map((fragment) => {
+        if (fragment.type === 'code') {
+          return applyStyle(baseStyles, fragment.text);
+        }
+        const tokenStyles = normalizeStyles(
+          (styles.syntaxStyles || {})[fragment.type] || styles.codeStyles
+        );
+        return applyStyle([...background, ...tokenStyles], fragment.text);
+      })
+      .join('');
+    return `${prefix}${body}`;
+  }
+
+  function renderTable(rows) {
+    const headerCells = splitTableCells(rows[0]);
+    const alignments = splitTableCells(rows[1]).map(parseAlignment);
+    const bodyRows = rows.slice(2).map(splitTableCells);
+    const columnCount = Math.max(
+      headerCells.length,
+      alignments.length,
+      ...bodyRows.map((cells) => cells.length),
+      1
+    );
+    const normalize = (cells) =>
+      Array.from({ length: columnCount }, (_, i) => cells[i] ?? '');
+
+    const renderHeaderCell = (cell) => {
+      // Cells with inline markup keep their own styling; plain cells get the
+      // table header style (nesting both would break the ANSI resets).
+      if (/[`*_[]/.test(cell)) return applyInlineMarkdown(cell);
+      return applyStyle(normalizeStyles(styles.tableHeaderStyles), cell);
+    };
+    const renderedHeader = normalize(headerCells).map(renderHeaderCell);
+    const renderedBody = bodyRows.map((cells) => normalize(cells).map(applyInlineMarkdown));
+
+    const widths = Array.from({ length: columnCount }, (_, i) =>
+      Math.max(
+        visibleWidth(renderedHeader[i]),
+        ...renderedBody.map((cells) => visibleWidth(cells[i])),
+        3
+      )
+    );
+
+    // If the table cannot fit the terminal, emit the raw rows instead of a
+    // mangled grid.
+    const totalWidth = widths.reduce((sum, w) => sum + w, 0) + (columnCount - 1) * 3;
+    if (totalWidth > (term.width || 80)) {
+      return rows.map((row) => applyInlineMarkdown(row)).join('\n');
+    }
+
+    const border = (text) => applyStyle(normalizeStyles(styles.tableBorderStyle), text);
+    const columnSeparator = border(' │ ');
+    const pad = (text, width, align) => {
+      const slack = Math.max(0, width - visibleWidth(text));
+      if (align === 'right') return ' '.repeat(slack) + text;
+      if (align === 'center') {
+        const leftPad = Math.floor(slack / 2);
+        return ' '.repeat(leftPad) + text + ' '.repeat(slack - leftPad);
+      }
+      return text + ' '.repeat(slack);
+    };
+    const renderRow = (cells) =>
+      cells.map((cell, i) => pad(cell, widths[i], alignments[i] || 'left')).join(columnSeparator);
+    const separatorLine = border(widths.map((w) => '─'.repeat(w)).join('─┼─'));
+
+    return [renderRow(renderedHeader), separatorLine, ...renderedBody.map(renderRow)].join('\n');
+  }
+
+  function flushTableBuffer() {
+    const rows = state.tableBuffer;
+    state.tableBuffer = [];
+    if (rows.length >= 2 && isTableSeparator(rows[1])) {
+      return renderTable(rows);
+    }
+    // Not actually a table; render the buffered lines as normal markdown.
+    return rows.map((row) => renderMarkdownLine(row, row.trim())).join('\n');
   }
 
   function renderMarkdownLine(sanitized, trimmed) {
@@ -239,9 +519,29 @@ export function createMarkdownRenderer(options = {}) {
     return applyInlineMarkdown(sanitized);
   }
 
+  // Returns the rendered line, or null when the line was buffered (table rows
+  // are collected until the table ends so column widths can be computed).
   function renderLine(line) {
     const sanitized = line.replace(/\r/g, '');
     const trimmed = sanitized.trim();
+    const canBufferTable = !state.inCodeBlock && !state.inIndentedCode;
+
+    if (state.tableBuffer.length) {
+      if (canBufferTable && isTableRow(sanitized)) {
+        state.tableBuffer.push(sanitized);
+        return null;
+      }
+      const flushed = flushTableBuffer();
+      const rest = renderLine(line);
+      return rest === null ? flushed : `${flushed}\n${rest}`;
+    }
+
+    if (canBufferTable && isTableRow(sanitized)) {
+      state.tableBuffer.push(sanitized);
+      state.prevBlank = false;
+      return null;
+    }
+
     const isBlank = trimmed.length === 0;
     const indentedMatch = sanitized.match(/^(?:\t| {4,})(.*)$/);
     const fenceMatch = matchFence(sanitized);
@@ -250,6 +550,7 @@ export function createMarkdownRenderer(options = {}) {
       if (state.inCodeBlock && fence === state.fenceType && !lang) {
         state.inCodeBlock = false;
         state.fenceType = null;
+        state.codeLang = null;
         if (!styles.codeBorder) return '';
         const chars = styles.codeBorderChars;
         state.prevBlank = false;
@@ -273,6 +574,7 @@ export function createMarkdownRenderer(options = {}) {
       }
       state.inCodeBlock = true;
       state.fenceType = fence;
+      state.codeLang = lang || null;
       if (!styles.codeBorder) return '';
       const chars = styles.codeBorderChars;
       state.prevBlank = false;
@@ -290,6 +592,7 @@ export function createMarkdownRenderer(options = {}) {
         return renderCodeLine(indentedMatch[1]);
       }
       state.inIndentedCode = false;
+      state.codeLang = null;
       if (styles.codeBorder) {
         const chars = styles.codeBorderChars;
         const closing = ruleLine(chars.bottomLeft, chars.bottom, chars.bottomRight);
@@ -302,6 +605,7 @@ export function createMarkdownRenderer(options = {}) {
 
     if (indentedMatch && state.prevBlank) {
       state.inIndentedCode = true;
+      state.codeLang = null;
       if (styles.codeBorder) {
         const chars = styles.codeBorderChars;
         const opening = ruleLine(chars.topLeft, chars.top, chars.topRight);
@@ -316,13 +620,22 @@ export function createMarkdownRenderer(options = {}) {
     return renderMarkdownLine(sanitized, trimmed);
   }
 
+  // Emit anything still buffered (a table not yet terminated by a non-table
+  // line). Call at end of stream/document.
+  function flush() {
+    if (!state.tableBuffer.length) return '';
+    return flushTableBuffer();
+  }
+
   function resetState() {
     state.inCodeBlock = false;
     state.inIndentedCode = false;
     state.fenceType = null;
+    state.codeLang = null;
     state.prevBlank = true;
     state.markdownWrapper = false;
     state.wrapperFenceType = null;
+    state.tableBuffer = [];
   }
 
   function renderText(text) {
@@ -331,9 +644,15 @@ export function createMarkdownRenderer(options = {}) {
     // into every subsequent renderText call sharing this renderer.
     resetState();
     const lines = text.split('\n');
-    const rendered = lines.map((line) => renderLine(line));
+    const rendered = [];
+    for (const line of lines) {
+      const result = renderLine(line);
+      if (result !== null) rendered.push(result);
+    }
+    const pending = flush();
+    if (pending) rendered.push(pending);
     return rendered.join('\n');
   }
 
-  return { renderLine, renderText, state };
+  return { renderLine, renderText, flush, state };
 }
