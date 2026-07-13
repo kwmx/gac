@@ -549,8 +549,9 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         term.dim("  Nothing to retry.\n\n");
         continue;
       }
-      // Remove the last assistant reply so we can regenerate
-      messages.splice(lastAiIdx, 1);
+      // Remove the last assistant reply so we can regenerate, but keep it so
+      // we can restore it if regeneration fails.
+      const [previousReply] = messages.splice(lastAiIdx, 1);
       session.messages = [...messages];
       term.dim("  Retrying…\n");
       term.bold.brightGreen("AI  ◀ ");
@@ -558,6 +559,9 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       try {
         retryReply = await chatCompletion(config, messages);
       } catch (err) {
+        // Restore the previous reply so a failed retry doesn't lose it.
+        messages.splice(lastAiIdx, 0, previousReply);
+        session.messages = [...messages];
         term.red(`\nError: ${err.message}\n\n`);
         continue;
       }

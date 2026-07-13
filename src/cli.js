@@ -1,6 +1,6 @@
 import terminalKit from "terminal-kit";
 import { chatCompletion, listModels } from "./gpt4all.js";
-import { getConfigPath, loadConfig, setConfigValue } from "./config.js";
+import { getConfigPath, loadConfig, setConfigValue, getConfigValue } from "./config.js";
 import { createMarkdownRenderer } from "./markdown.js";
 import { runChat } from "./chat.js";
 import { spawn } from "child_process";
@@ -51,7 +51,7 @@ function printHelp() {
   term(`  gac --debug-render -a "Show rendered and raw output"\n`);
   term(`\n`);
 }
-function parseOsRelease(contents) {
+export function parseOsRelease(contents) {
   const result = {};
   const lines = contents.split("\n");
   for (const line of lines) {
@@ -207,14 +207,14 @@ function buildRunbookContext() {
   ].join("\n");
 }
 
-function normalizeCommandText(value) {
+export function normalizeCommandText(value) {
   return String(value || "")
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
 }
 
-function loadBlockedCommands() {
+export function loadBlockedCommands() {
   try {
     const raw = fs.readFileSync(BLOCKED_COMMANDS_PATH, "utf8");
     const parsed = JSON.parse(raw);
@@ -226,7 +226,7 @@ function loadBlockedCommands() {
   }
 }
 
-function findBlockedCommand(command, blockedList) {
+export function findBlockedCommand(command, blockedList) {
   const raw = String(command || "");
   const normalized = normalizeCommandText(raw);
   return blockedList.find((entry) => {
@@ -243,7 +243,7 @@ function findBlockedCommand(command, blockedList) {
   });
 }
 
-function extractJsonPayload(text) {
+export function extractJsonPayload(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return null;
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -259,7 +259,7 @@ function extractJsonPayload(text) {
   }
 }
 
-function normalizeRunbookCommands(payload) {
+export function normalizeRunbookCommands(payload) {
   if (!payload || !Array.isArray(payload.commands)) {
     return { commands: [], notes: [] };
   }
@@ -427,7 +427,7 @@ function runShellCommand(session, command) {
   });
 }
 
-function normalizeDefaultAction(action) {
+export function normalizeDefaultAction(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (normalized === "ask" || normalized === "suggest" || normalized === "explain") {
     return normalized;
@@ -956,7 +956,16 @@ export async function runCli(argv) {
     }
     if (args[1] === "get" && args[2]) {
       const key = args[2];
-      term(`${config[key]}\n`);
+      const value = getConfigValue(key);
+      if (value === undefined) {
+        term(`Key "${key}" is not set.\n`);
+        return;
+      }
+      if (value !== null && typeof value === "object") {
+        term(`${JSON.stringify(value, null, 2)}\n`);
+      } else {
+        term(`${value}\n`);
+      }
       return;
     }
     if (args[1] === "set" && args[2] && args[3] !== undefined) {

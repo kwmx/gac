@@ -316,7 +316,20 @@ export function createMarkdownRenderer(options = {}) {
     return renderMarkdownLine(sanitized, trimmed);
   }
 
+  function resetState() {
+    state.inCodeBlock = false;
+    state.inIndentedCode = false;
+    state.fenceType = null;
+    state.prevBlank = true;
+    state.markdownWrapper = false;
+    state.wrapperFenceType = null;
+  }
+
   function renderText(text) {
+    // renderText renders a self-contained document, so start from a clean
+    // state. Otherwise an unbalanced code fence in one message would leak
+    // into every subsequent renderText call sharing this renderer.
+    resetState();
     const lines = text.split('\n');
     const rendered = lines.map((line) => renderLine(line));
     return rendered.join('\n');

@@ -3,7 +3,7 @@ import { createMarkdownRenderer } from "./markdown.js";
 
 const { terminal: term } = terminalKit;
 
-function getContentDelta(chunk) {
+export function getContentDelta(chunk) {
   if (!chunk || !chunk.choices || !chunk.choices[0]) return "";
   const choice = chunk.choices[0];
   if (choice.delta && choice.delta.content) return choice.delta.content;
@@ -12,20 +12,20 @@ function getContentDelta(chunk) {
   return "";
 }
 
-function getOllamaContentDelta(chunk) {
+export function getOllamaContentDelta(chunk) {
   if (!chunk) return "";
   if (chunk.message && chunk.message.content) return chunk.message.content;
   if (chunk.response) return chunk.response;
   return "";
 }
 
-function normalizeOpenAiBaseUrl(baseUrl) {
+export function normalizeOpenAiBaseUrl(baseUrl) {
   const trimmed = baseUrl.replace(/\/$/, "");
   if (trimmed.endsWith("/v1")) return trimmed;
   return `${trimmed}/v1`;
 }
 
-function normalizeOllamaBaseUrl(baseUrl) {
+export function normalizeOllamaBaseUrl(baseUrl) {
   return baseUrl.replace(/\/$/, "");
 }
 
@@ -54,7 +54,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function createThinkingParser({ onContent, onThinking, onThinkingEnd }) {
+export function createThinkingParser({ onContent, onThinking, onThinkingEnd }) {
   let state = "normal"; // 'normal' | 'maybe_open' | 'in_think' | 'maybe_close'
   let tagBuf = "";
 
@@ -118,11 +118,11 @@ function createThinkingParser({ onContent, onThinking, onThinkingEnd }) {
   return { push, flush };
 }
 
-function stripThinkingBlocks(text) {
+export function stripThinkingBlocks(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
-function extract503Message(text) {
+export function extract503Message(text) {
   try {
     const body = JSON.parse(text);
     if (body?.error?.message) return body.error.message;
@@ -146,89 +146,15 @@ async function parseStream(response, onToken, renderer, config) {
     }
   };
 
-  const thinkingParser = createThinkingParser({
-    onContent(chunk) {
-      fullText += chunk;
-      if (!renderer) {
-        onToken(chunk);
-      } else {
-        lineBuffer += chunk;
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() || "";
-        for (const line of lines) {
-          onToken(`${renderer.renderLine(line)}\n`);
-        }
-      }
-    },
-    onThinking(chunk) {
-      if (!showThinking) return;
-      if (!thinkingActive) {
-        term.saveCursor();
-        term.dim("thinking...\n");
-        thinkingActive = true;
-      }
-      term.dim(chunk);
-    },
-    onThinkingEnd() {
-      if (!showThinking || !thinkingActive) return;
-      term.restoreCursor();
-      term.eraseDisplayBelow();
-      thinkingActive = false;
-    },
-  });
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith("data:")) continue;
-      const payload = trimmed.replace(/^data:\s*/, "");
-      if (payload === "[DONE]") {
-        thinkingParser.flush();
-        flushLineBuffer();
-        return fullText;
-      }
-
-      try {
-        const json = JSON.parse(payload);
-        const delta = getContentDelta(json);
-        if (delta) {
-          thinkingParser.push(delta);
-        }
-      } catch (err) {
-        // Ignore non-JSON payloads
-      }
-    }
-  }
-
-  thinkingParser.flush();
-  if (renderer && lineBuffer) {
-    onToken(renderer.renderLine(lineBuffer));
-  }
-
-  return fullText;
-}
-
-async function parseOllamaStream(response, onToken, renderer, config) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  let fullText = "";
-  let lineBuffer = "";
-  let thinkingActive = false;
-  const showThinking = config?.showThinking !== false;
-
-  const flushLineBuffer = () => {
-    if (renderer && lineBuffer) {
-      onToken(renderer.renderLine(lineBuffer));
-      lineBuffer = "";
-    }
+  // Restore the terminal to the pre-"thinking..." state. Used both when a
+  // </think> tag arrives and when the stream ends while still inside a think
+  // block (no closing tag / no [DONE]), so a truncated stream never leaves a
+  // saved cursor and a stale "thinking..." line behind.
+  const finishThinkingDisplay = () => {
+    if (!thinkingActive) return;
+    term.restoreCursor();
+    term.eraseDisplayBelow();
+    thinkingActive = false;
   };
 
   const thinkingParser = createThinkingParser({
@@ -255,10 +181,102 @@ async function parseOllamaStream(response, onToken, renderer, config) {
       term.dim(chunk);
     },
     onThinkingEnd() {
-      if (!showThinking || !thinkingActive) return;
-      term.restoreCursor();
-      term.eraseDisplayBelow();
-      thinkingActive = false;
+      finishThinkingDisplay();
+    },
+  });
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data:")) continue;
+      const payload = trimmed.replace(/^data:\s*/, "");
+      if (payload === "[DONE]") {
+        thinkingParser.flush();
+        finishThinkingDisplay();
+        flushLineBuffer();
+        return fullText;
+      }
+
+      try {
+        const json = JSON.parse(payload);
+        const delta = getContentDelta(json);
+        if (delta) {
+          thinkingParser.push(delta);
+        }
+      } catch (err) {
+        // Ignore non-JSON payloads
+      }
+    }
+  }
+
+  thinkingParser.flush();
+  finishThinkingDisplay();
+  if (renderer && lineBuffer) {
+    onToken(renderer.renderLine(lineBuffer));
+  }
+
+  return fullText;
+}
+
+async function parseOllamaStream(response, onToken, renderer, config) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let fullText = "";
+  let lineBuffer = "";
+  let thinkingActive = false;
+  const showThinking = config?.showThinking !== false;
+
+  const flushLineBuffer = () => {
+    if (renderer && lineBuffer) {
+      onToken(renderer.renderLine(lineBuffer));
+      lineBuffer = "";
+    }
+  };
+
+  // Restore the terminal to the pre-"thinking..." state. Used both when a
+  // </think> tag arrives and when the stream ends while still inside a think
+  // block, so a truncated stream never leaves a saved cursor and a stale
+  // "thinking..." line behind.
+  const finishThinkingDisplay = () => {
+    if (!thinkingActive) return;
+    term.restoreCursor();
+    term.eraseDisplayBelow();
+    thinkingActive = false;
+  };
+
+  const thinkingParser = createThinkingParser({
+    onContent(chunk) {
+      fullText += chunk;
+      if (!renderer) {
+        onToken(chunk);
+      } else {
+        lineBuffer += chunk;
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() || "";
+        for (const line of lines) {
+          onToken(`${renderer.renderLine(line)}\n`);
+        }
+      }
+    },
+    onThinking(chunk) {
+      if (!showThinking) return;
+      if (!thinkingActive) {
+        term.saveCursor();
+        term.dim("thinking...\n");
+        thinkingActive = true;
+      }
+      term.dim(chunk);
+    },
+    onThinkingEnd() {
+      finishThinkingDisplay();
     },
   });
 
@@ -277,6 +295,7 @@ async function parseOllamaStream(response, onToken, renderer, config) {
         const json = JSON.parse(trimmed);
         if (json.done) {
           thinkingParser.flush();
+          finishThinkingDisplay();
           flushLineBuffer();
           return fullText;
         }
@@ -291,6 +310,7 @@ async function parseOllamaStream(response, onToken, renderer, config) {
   }
 
   thinkingParser.flush();
+  finishThinkingDisplay();
   if (renderer && lineBuffer) {
     onToken(renderer.renderLine(lineBuffer));
   }

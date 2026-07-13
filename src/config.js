@@ -99,7 +99,7 @@ export function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(normalized, null, 2));
 }
 
-function coerceValue(value) {
+export function coerceValue(value) {
   const trimmed = value.trim();
   if (
     (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
@@ -116,6 +116,20 @@ function coerceValue(value) {
   if (trimmed === "null") return null;
   if (!Number.isNaN(Number(trimmed)) && trimmed !== "") return Number(trimmed);
   return value;
+}
+
+export function getConfigValue(key) {
+  const config = loadConfig();
+  const parts = key.split(".");
+  let cursor = config;
+  for (const part of parts) {
+    if (cursor && typeof cursor === "object" && part in cursor) {
+      cursor = cursor[part];
+    } else {
+      return undefined;
+    }
+  }
+  return cursor;
 }
 
 export function setConfigValue(key, value) {
