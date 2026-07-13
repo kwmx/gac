@@ -99,7 +99,7 @@ export function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(normalized, null, 2));
 }
 
-function coerceValue(value) {
+export function coerceValue(value) {
   const trimmed = value.trim();
   if (
     (trimmed.startsWith("{") && trimmed.endsWith("}")) ||

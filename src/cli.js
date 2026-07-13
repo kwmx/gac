@@ -51,7 +51,7 @@ function printHelp() {
   term(`  gac --debug-render -a "Show rendered and raw output"\n`);
   term(`\n`);
 }
-function parseOsRelease(contents) {
+export function parseOsRelease(contents) {
   const result = {};
   const lines = contents.split("\n");
   for (const line of lines) {
@@ -207,14 +207,14 @@ function buildRunbookContext() {
   ].join("\n");
 }
 
-function normalizeCommandText(value) {
+export function normalizeCommandText(value) {
   return String(value || "")
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
 }
 
-function loadBlockedCommands() {
+export function loadBlockedCommands() {
   try {
     const raw = fs.readFileSync(BLOCKED_COMMANDS_PATH, "utf8");
     const parsed = JSON.parse(raw);
@@ -226,7 +226,7 @@ function loadBlockedCommands() {
   }
 }
 
-function findBlockedCommand(command, blockedList) {
+export function findBlockedCommand(command, blockedList) {
   const raw = String(command || "");
   const normalized = normalizeCommandText(raw);
   return blockedList.find((entry) => {
@@ -243,7 +243,7 @@ function findBlockedCommand(command, blockedList) {
   });
 }
 
-function extractJsonPayload(text) {
+export function extractJsonPayload(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return null;
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -259,7 +259,7 @@ function extractJsonPayload(text) {
   }
 }
 
-function normalizeRunbookCommands(payload) {
+export function normalizeRunbookCommands(payload) {
   if (!payload || !Array.isArray(payload.commands)) {
     return { commands: [], notes: [] };
   }
@@ -427,7 +427,7 @@ function runShellCommand(session, command) {
   });
 }
 
-function normalizeDefaultAction(action) {
+export function normalizeDefaultAction(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (normalized === "ask" || normalized === "suggest" || normalized === "explain") {
     return normalized;
