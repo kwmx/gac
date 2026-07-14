@@ -1,6 +1,6 @@
 {
   "name": "@alhisan/gac",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "AI-powered terminal assistant for OpenAI-compatible APIs, Ollama, and OpenAI Codex.",
   "license": "GPL-3.0-only",
   "type": "module",
