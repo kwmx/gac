@@ -18,6 +18,7 @@ import {
 } from "./input.js";
 import {
   resolveContextWindow,
+  resolveMaxTokens,
   contextBudget,
   estimateTokens,
 } from "./contextwindow.js";
@@ -35,11 +36,12 @@ async function runSinglePrompt(mode, prompt, config, extras = {}) {
   const piped = extras.piped || null;
   const files = extras.files || [];
   const contextWindow = await resolveContextWindow(config);
+  const maxTokens = await resolveMaxTokens(config);
   const system = buildSystemPrompt(mode, config);
 
   // Character budget for attached context (piped input and files), sized so
   // the whole prompt still fits the model's context window.
-  const budgetTokens = contextBudget(contextWindow, config.maxTokens);
+  const budgetTokens = contextBudget(contextWindow, maxTokens);
   const budgetChars = Math.max(
     4000,
     (budgetTokens - estimateTokens(system) - estimateTokens(prompt) - 500) * 4

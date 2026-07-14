@@ -1,6 +1,10 @@
 import terminalKit from "terminal-kit";
 import { createMarkdownRenderer } from "./markdown.js";
-import { resolveContextWindow, resolveGenerationBudget } from "./contextwindow.js";
+import {
+  resolveContextWindow,
+  resolveMaxTokens,
+  resolveGenerationBudget,
+} from "./contextwindow.js";
 import { codexChatCompletion, listCodexModels, resolveCodexModel } from "./codex.js";
 
 const { terminal: term } = terminalKit;
@@ -479,7 +483,9 @@ async function openAiChatCompletion(config, messages, budget) {
     model: config.model,
     messages,
     temperature: config.temperature,
-    max_tokens: budget.maxTokens,
+    // A null cap (maxTokens <= 0 in config) means unlimited: omit max_tokens
+    // so the server allows up to the model's own maximum.
+    ...(Number(budget.maxTokens) > 0 ? { max_tokens: budget.maxTokens } : {}),
     stream: Boolean(config.stream),
   };
 
@@ -561,7 +567,10 @@ async function ollamaChatCompletion(config, messages, budget) {
     stream: Boolean(config.stream),
     options: {
       temperature: config.temperature,
-      num_predict: budget.maxTokens,
+      // -1 is Ollama's "no limit"; sent explicitly (rather than omitted) so
+      // an uncapped config also overrides any num_predict baked into the
+      // modelfile.
+      num_predict: Number(budget.maxTokens) > 0 ? budget.maxTokens : -1,
       // Size the runtime context to the conversation (instead of Ollama's
       // 4096 default) so long chats aren't silently truncated by the server.
       ...(budget.numCtx ? { num_ctx: budget.numCtx } : {}),
@@ -617,7 +626,10 @@ export async function chatCompletion(config, messages, options = {}) {
     options.contextWindow !== undefined
       ? options.contextWindow
       : await resolveContextWindow(config);
-  const budget = resolveGenerationBudget(config, messages, contextWindow);
+  // Turn a "auto" maxTokens into the model definition's limit (explicit
+  // numeric configs pass straight through without probing).
+  const maxTokens = await resolveMaxTokens(config);
+  const budget = resolveGenerationBudget({ ...config, maxTokens }, messages, contextWindow);
   if (provider === "codex") {
     return codexChatCompletion(config, messages, budget);
   }

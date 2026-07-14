@@ -5,10 +5,17 @@ import {
   estimateMessagesTokens,
   pickOllamaContextLength,
   pickOpenAiContextLength,
+  pickOllamaMaxTokens,
+  pickOpenAiMaxTokens,
   contextBudget,
   trimMessagesToBudget,
   resolveGenerationBudget,
+  resolveMaxTokens,
+  detectModelLimits,
   FALLBACK_CONTEXT_TOKENS,
+  CODEX_CONTEXT_TOKENS,
+  CODEX_MAX_OUTPUT_TOKENS,
+  DEFAULT_MAX_TOKENS,
 } from "../src/contextwindow.js";
 
 test("estimateTokens approximates ~4 chars per token", () => {
@@ -42,6 +49,47 @@ test("pickOpenAiContextLength reads the common metadata field names", () => {
   assert.equal(pickOpenAiContextLength({ context_window: 4096 }), 4096);
   assert.equal(pickOpenAiContextLength({ id: "some-model" }), null);
   assert.equal(pickOpenAiContextLength(null), null);
+});
+
+test("pickOllamaMaxTokens reads a positive num_predict from the modelfile", () => {
+  assert.equal(pickOllamaMaxTokens({ parameters: "num_predict 4096" }), 4096);
+  assert.equal(
+    pickOllamaMaxTokens({ parameters: 'stop "<|end|>"\nnum_predict "1024"' }),
+    1024
+  );
+  // -1/-2 are Ollama's "unlimited"/"fill context", not usable caps.
+  assert.equal(pickOllamaMaxTokens({ parameters: "num_predict -1" }), null);
+  assert.equal(pickOllamaMaxTokens({}), null);
+  assert.equal(pickOllamaMaxTokens(null), null);
+});
+
+test("pickOpenAiMaxTokens reads the common output-limit field names", () => {
+  assert.equal(pickOpenAiMaxTokens({ max_output_tokens: 8192 }), 8192);
+  assert.equal(pickOpenAiMaxTokens({ max_completion_tokens: 4096 }), 4096);
+  assert.equal(
+    pickOpenAiMaxTokens({ top_provider: { max_completion_tokens: 16384 } }),
+    16384
+  );
+  assert.equal(pickOpenAiMaxTokens({ id: "some-model" }), null);
+  assert.equal(pickOpenAiMaxTokens(null), null);
+});
+
+test("resolveMaxTokens: explicit config wins, auto uses the model definition", async () => {
+  // Explicit numbers pass straight through, including <= 0 (no cap).
+  assert.equal(await resolveMaxTokens({ provider: "codex", maxTokens: 4096 }), 4096);
+  assert.equal(await resolveMaxTokens({ provider: "codex", maxTokens: 0 }), 0);
+  assert.equal(await resolveMaxTokens({ provider: "codex", maxTokens: -1 }), -1);
+  // "auto" (the default) takes the limit from the model definition.
+  assert.equal(
+    await resolveMaxTokens({ provider: "codex", maxTokens: "auto" }),
+    CODEX_MAX_OUTPUT_TOKENS
+  );
+});
+
+test("detectModelLimits reports the Codex family limits without probing", async () => {
+  const limits = await detectModelLimits({ provider: "codex" });
+  assert.equal(limits.contextWindow, CODEX_CONTEXT_TOKENS);
+  assert.equal(limits.maxTokens, CODEX_MAX_OUTPUT_TOKENS);
 });
 
 test("contextBudget reserves the response and a safety margin", () => {
@@ -123,6 +171,31 @@ test("resolveGenerationBudget never raises a deliberately small maxTokens", () =
     8192
   );
   assert.equal(budget.maxTokens, 12);
+});
+
+test("resolveGenerationBudget lifts the cap when maxTokens is 0 or less", () => {
+  // maxTokens <= 0 means "answer as long as necessary": no response cap, and
+  // Ollama gets the full model window since the reply may fill it.
+  const uncapped = resolveGenerationBudget(
+    { maxTokens: 0 },
+    [{ role: "user", content: "hi" }],
+    8192
+  );
+  assert.equal(uncapped.maxTokens, null);
+  assert.equal(uncapped.numCtx, 8192);
+
+  const negative = resolveGenerationBudget({ maxTokens: -1 }, [], null);
+  assert.equal(negative.maxTokens, null);
+  assert.equal(negative.numCtx, null);
+
+  // A missing maxTokens still falls back to the 2048 default, not unlimited.
+  const missing = resolveGenerationBudget({}, [], null);
+  assert.equal(missing.maxTokens, 2048);
+});
+
+test("contextBudget keeps the default response reserve when the cap is lifted", () => {
+  assert.equal(contextBudget(8192, 0), contextBudget(8192, 2048));
+  assert.equal(contextBudget(8192, -5), contextBudget(8192, 2048));
 });
 
 test("resolveGenerationBudget quantizes num_ctx so it stays stable across turns", () => {

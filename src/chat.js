@@ -8,6 +8,7 @@ import { createMarkdownRenderer } from "./markdown.js";
 import { copyToClipboard, extractLastCodeBlock } from "./tui.js";
 import {
   resolveContextWindow,
+  resolveMaxTokens,
   contextBudget,
   trimMessagesToBudget,
 } from "./contextwindow.js";
@@ -373,6 +374,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
   // Resolved once per session (and again on /model switches); detection
   // results are cached per model, so this is at most one cheap probe.
   let contextWindow = await resolveContextWindow(config);
+  let maxTokens = await resolveMaxTokens(config);
   const effectiveSystemPrompt = session.customSystemPrompt ?? defaultSystemPrompt;
 
   // Build the live messages array
@@ -578,8 +580,9 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       if (idx === null) continue;
       // Codex keeps its own model key so provider switches stay independent.
       config[getActiveModelKey(config)] = models[idx];
-      // The new model may have a different context window.
+      // The new model may have a different context window and response cap.
       contextWindow = await resolveContextWindow(config);
+      maxTokens = await resolveMaxTokens(config);
       term.dim(
         `  Model set to ${getActiveModel(config)} for this session. Use \`gac models\` to change the default.\n\n`
       );
@@ -638,7 +641,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       term.dim("  Retrying…\n");
       const retryTrim = trimMessagesToBudget(
         messages,
-        contextBudget(contextWindow, config.maxTokens)
+        contextBudget(contextWindow, maxTokens)
       );
       if (retryTrim.dropped > 0) {
         term.dim(
@@ -701,7 +704,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     // fit the model's context window.
     const trimmed = trimMessagesToBudget(
       messages,
-      contextBudget(contextWindow, config.maxTokens)
+      contextBudget(contextWindow, maxTokens)
     );
     if (trimmed.dropped > 0) {
       term.dim(
