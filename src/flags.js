@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import terminalKit from "terminal-kit";
+import { ATTRIBUTION } from "./telemetry/contract.js";
 
 const { terminal: term } = terminalKit;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,7 @@ const COMMANDS = new Set([
   "commit",
   "fix",
   "completions",
+  "telemetry",
   "-a",
 ]);
 
@@ -145,6 +147,7 @@ export function printHelp() {
   term(`  auth status       Show connection/sign-in status\n`);
   term(`  auth logout       Remove stored ChatGPT credentials\n`);
   term(`  completions <shell>       Print completion script (bash/zsh/fish)\n`);
+  term(`  telemetry <status|info|enable|disable>  Manage optional, opt-in telemetry\n`);
   term(`\n`);
   term(`Flags (place before the prompt; later tokens are prompt text):\n`);
   term(`  -f, --file <path>       Include a file as context (repeatable)\n`);
@@ -168,5 +171,9 @@ export function printHelp() {
   term(`  gac runbook --dry-run "Set up a new Node.js project with eslint"\n`);
   term(`  gac runbook --export setup.sh "Install docker"\n`);
   term(`  gac commit\n`);
+  term(`\n`);
+  term(`Telemetry is OFF by default and opt-in. See: gac telemetry info\n`);
+  term(`\n`);
+  term(`${ATTRIBUTION}\n`);
   term(`\n`);
 }

@@ -14,9 +14,17 @@ import {
   resolveMaxTokens,
   contextBudget,
 } from "./contextwindow.js";
+import { sizeBucket, countBucket } from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
 const execFileAsync = promisify(execFile);
+
+// Coarse count of staged files from `git diff --staged --stat` (the last line is
+// the "N files changed" summary). Used only for a count bucket — never a name.
+export function countStagedFiles(stat) {
+  const lines = String(stat || "").trim().split("\n").filter(Boolean);
+  return lines.length > 0 ? Math.max(0, lines.length - 1) : 0;
+}
 
 // Strip the wrappers small models like to add around the actual message:
 // code fences, "Commit message:" labels, and surrounding quotes.
@@ -61,7 +69,7 @@ function buildCommitUserPrompt({ stat, diff, recentLog }, maxDiffChars) {
   return parts.join("\n\n");
 }
 
-async function generateCommitMessage(config, promptText, contextWindow) {
+async function generateCommitMessage(config, promptText, contextWindow, telemetry, action = "commit_generate") {
   const messages = [
     { role: "system", content: buildSystemPrompt("commit", config) },
     { role: "user", content: promptText },
@@ -72,7 +80,11 @@ async function generateCommitMessage(config, promptText, contextWindow) {
     renderMarkdown: false,
     debugRender: false,
   };
-  const reply = await chatCompletion(commitConfig, messages, { contextWindow });
+  const reply = await chatCompletion(commitConfig, messages, {
+    contextWindow,
+    telemetry,
+    telemetryAction: action,
+  });
   return cleanCommitMessage(reply);
 }
 
@@ -155,12 +167,13 @@ async function commitWithMessage(message) {
 }
 
 export async function runCommit(config, opts = {}) {
+  const telemetry = opts.telemetry;
   try {
     await git(["rev-parse", "--is-inside-work-tree"]);
   } catch (err) {
     term("Not a git repository.\n");
     process.exitCode = 1;
-    return;
+    return { outcome: "failure", props: {} };
   }
 
   let diff;
@@ -176,14 +189,34 @@ export async function runCommit(config, opts = {}) {
   } catch (err) {
     term.red(`Failed to read staged changes: ${err.message}\n`);
     process.exitCode = 1;
-    return;
+    return { outcome: "failure", props: {} };
   }
   recentLog = recentLog.trim();
 
   if (!diff.trim()) {
     term("No staged changes. Stage files with `git add` first.\n");
-    return;
+    return { outcome: "no_op", props: {} };
   }
+
+  // Coarse, sanitized properties shared by every commit_action_completed event.
+  // No diff, message, filename, branch, or repository identity ever leaves here.
+  const commitProps = {
+    dry_run: Boolean(opts.dryRun),
+    staged_file_count_bucket: countBucket(countStagedFiles(stat)),
+    diff_size_bucket: sizeBucket(diff.length),
+    had_recent_history: Boolean(recentLog),
+  };
+  const trackCommit = (action, outcome, errorCategory = null) => {
+    if (!telemetry) return;
+    telemetry.track({
+      event_name: "commit_action_completed",
+      action,
+      outcome,
+      duration_ms: null,
+      error_category: errorCategory,
+      properties: commitProps,
+    });
+  };
 
   const contextWindow = await resolveContextWindow(config);
   const maxTokens = await resolveMaxTokens(config);
@@ -202,12 +235,14 @@ export async function runCommit(config, opts = {}) {
   } else {
     process.stderr.write("Generating commit message...\n");
   }
-  let message = await generateCommitMessage(config, promptText, contextWindow);
+  let message = await generateCommitMessage(config, promptText, contextWindow, telemetry);
   if (!message) {
     term("The model returned an empty commit message. Try again.\n");
     process.exitCode = 1;
-    return;
+    trackCommit("generate", "failure", "empty_response");
+    return { outcome: "failure", props: {} };
   }
+  trackCommit("generate", "success");
 
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (!interactive || opts.dryRun) {
@@ -217,7 +252,8 @@ export async function runCommit(config, opts = {}) {
     if (opts.dryRun && interactive) {
       term.dim("Dry run: nothing was committed.\n");
     }
-    return;
+    trackCommit("print", "success");
+    return { outcome: "success", props: {} };
   }
 
   while (true) {
@@ -225,19 +261,29 @@ export async function runCommit(config, opts = {}) {
     const action = await promptCommitAction();
     if (action === "quit") {
       term("Canceled. Nothing was committed.\n");
-      return;
+      trackCommit("cancel", "cancelled");
+      return { outcome: "cancelled", props: {} };
     }
     if (action === "edit") {
       message = editInEditor(message);
+      trackCommit("edit", "success");
       continue;
     }
     if (action === "regenerate") {
       term.dim("Regenerating...\n");
-      const regenerated = await generateCommitMessage(config, promptText, contextWindow);
+      const regenerated = await generateCommitMessage(
+        config,
+        promptText,
+        contextWindow,
+        telemetry,
+        "commit_regenerate"
+      );
       if (regenerated) {
         message = regenerated;
+        trackCommit("regenerate", "success");
       } else {
         term.dim("Regeneration returned nothing; keeping the current message.\n");
+        trackCommit("regenerate", "no_op");
       }
       continue;
     }
@@ -245,9 +291,11 @@ export async function runCommit(config, opts = {}) {
     const ok = await commitWithMessage(message);
     if (ok) {
       term("Committed.\n");
-    } else {
-      process.exitCode = 1;
+      trackCommit("commit", "success");
+      return { outcome: "success", props: {} };
     }
-    return;
+    process.exitCode = 1;
+    trackCommit("commit", "failure", "git");
+    return { outcome: "failure", props: {} };
   }
 }

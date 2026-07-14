@@ -1,7 +1,7 @@
 {
   "name": "@alhisan/gac",
   "version": "1.4.0",
-  "description": "Terminal client for GPT4All running on localhost",
+  "description": "AI-powered terminal assistant for OpenAI-compatible APIs, Ollama, and OpenAI Codex.",
   "license": "GPL-3.0-only",
   "type": "module",
   "bin": {

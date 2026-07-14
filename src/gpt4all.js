@@ -6,6 +6,8 @@ import {
   resolveGenerationBudget,
 } from "./contextwindow.js";
 import { codexChatCompletion, listCodexModels, resolveCodexModel } from "./codex.js";
+import { sizeBucket, countBucket, contextWindowBucket } from "./telemetry/buckets.js";
+import { classifyModelError } from "./telemetry/errors.js";
 
 const { terminal: term } = terminalKit;
 
@@ -617,6 +619,17 @@ async function ollamaChatCompletion(config, messages, budget) {
   return content;
 }
 
+// Dispatch to the active provider. Telemetry is measured around this call only.
+function providerChatCompletion(provider, config, messages, budget) {
+  if (provider === "codex") {
+    return codexChatCompletion(config, messages, budget);
+  }
+  if (provider === "ollama") {
+    return ollamaChatCompletion(config, messages, budget);
+  }
+  return openAiChatCompletion(config, messages, budget);
+}
+
 export async function chatCompletion(config, messages, options = {}) {
   const provider = getProvider(config);
   // Callers that already resolved the context window pass it in (including
@@ -630,11 +643,64 @@ export async function chatCompletion(config, messages, options = {}) {
   // numeric configs pass straight through without probing).
   const maxTokens = await resolveMaxTokens(config);
   const budget = resolveGenerationBudget({ ...config, maxTokens }, messages, contextWindow);
-  if (provider === "codex") {
-    return codexChatCompletion(config, messages, budget);
+
+  // Telemetry is opt-in and passed explicitly by the caller (no inference from
+  // message content). `track` never throws; the original error is preserved and
+  // rethrown unchanged.
+  const telemetry = options.telemetry;
+  const telemetryAction = options.telemetryAction;
+  const instrument = telemetry && telemetryAction;
+
+  if (!instrument) {
+    return providerChatCompletion(provider, config, messages, budget);
   }
-  if (provider === "ollama") {
-    return ollamaChatCompletion(config, messages, budget);
+
+  const inputChars = messages.reduce(
+    (sum, msg) => sum + (msg && typeof msg.content === "string" ? msg.content.length : 0),
+    0
+  );
+  const baseProps = {
+    streaming: Boolean(config.stream),
+    render_markdown: Boolean(config.renderMarkdown),
+    show_thinking: config.showThinking !== false,
+    input_size_bucket: sizeBucket(inputChars),
+    message_count_bucket: countBucket(messages.length),
+    context_window_bucket: contextWindowBucket(contextWindow),
+    ...(options.telemetryProps || {}),
+  };
+
+  const start = Date.now();
+  try {
+    const reply = await providerChatCompletion(provider, config, messages, budget);
+    const durationMs = Date.now() - start;
+    const empty = !reply || !String(reply).trim();
+    telemetry.track({
+      event_name: "model_request_completed",
+      action: telemetryAction,
+      outcome: empty ? "failure" : "success",
+      duration_ms: durationMs,
+      error_category: empty ? "empty_response" : null,
+      properties: {
+        ...baseProps,
+        output_size_bucket: sizeBucket(reply ? String(reply).length : 0),
+        http_status_class: "2xx",
+      },
+    });
+    return reply;
+  } catch (err) {
+    const durationMs = Date.now() - start;
+    const { errorCategory, httpStatusClass } = classifyModelError(err);
+    telemetry.track({
+      event_name: "model_request_completed",
+      action: telemetryAction,
+      outcome: "failure",
+      duration_ms: durationMs,
+      error_category: errorCategory,
+      properties: {
+        ...baseProps,
+        http_status_class: httpStatusClass,
+      },
+    });
+    throw err;
   }
-  return openAiChatCompletion(config, messages, budget);
 }

@@ -20,6 +20,7 @@ import {
   findBlockedCommand,
 } from "./runbook.js";
 import { promptKeyAction, copyToClipboard } from "./tui.js";
+import { exitCodeClass } from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
 
@@ -90,7 +91,7 @@ function readLastShellCommand() {
 // Fix flow
 // ─────────────────────────────────────────────────────────────────
 
-async function requestFix(command, errorOutput, config) {
+async function requestFix(command, errorOutput, config, telemetry) {
   const contextWindow = await resolveContextWindow(config);
   const maxTokens = await resolveMaxTokens(config);
   const system = buildSystemPrompt("fix", config);
@@ -124,7 +125,7 @@ async function requestFix(command, errorOutput, config) {
       { role: "system", content: `Relevant context:\n${buildDirectoryContext()}` },
       { role: "user", content: parts.join("\n") },
     ],
-    { contextWindow }
+    { contextWindow, telemetry, telemetryAction: "fix_generate" }
   );
   return extractCommandFix(extractJsonPayload(reply));
 }
@@ -177,14 +178,35 @@ async function editFixedCommand(current) {
 }
 
 export async function runFix(promptArgs, config, opts = {}) {
+  const telemetry = opts.telemetry;
   const explicit = (promptArgs || []).join(" ").trim();
   const command = explicit || readLastShellCommand();
+  const source = explicit ? "explicit" : "shell_history";
+  const pipedContext = Boolean(opts.piped);
+
+  // Sanitized fix_action_completed telemetry. Never the command, error output,
+  // generated fix, explanation, or edited command — only coarse categories.
+  const trackFix = (action, outcome, extra = {}) => {
+    if (!telemetry) return;
+    const properties = { source, piped_error_context: pipedContext };
+    if (extra.was_blocked !== undefined) properties.was_blocked = extra.was_blocked;
+    if (extra.exit_code_class !== undefined) properties.exit_code_class = extra.exit_code_class;
+    telemetry.track({
+      event_name: "fix_action_completed",
+      action,
+      outcome,
+      duration_ms: null,
+      error_category: extra.error_category ?? null,
+      properties,
+    });
+  };
+
   if (!command) {
     term(
       "Couldn't determine the last command from shell history. Pass it explicitly: gac fix <command>\n"
     );
     process.exitCode = 1;
-    return;
+    return { outcome: "failure", props: {} };
   }
 
   if (!explicit) {
@@ -196,20 +218,23 @@ export async function runFix(promptArgs, config, opts = {}) {
     process.stderr.write("Asking the model for a fix...\n");
   }
 
-  const fix = await requestFix(command, opts.piped || "", config);
+  const fix = await requestFix(command, opts.piped || "", config, telemetry);
   if (!fix) {
     term("No usable fix was returned. Try again with more context, e.g. pipe the error output:\n");
     term.dim("  mycommand 2>&1 | gac fix mycommand\n");
     process.exitCode = 1;
-    return;
+    trackFix("generate", "failure", { error_category: "empty_response" });
+    return { outcome: "failure", props: {} };
   }
+  trackFix("generate", "success");
 
   if (!opts.interactive) {
     // Piped/scripted use: the corrected command is the payload, the
     // explanation is commentary.
     if (fix.explanation) process.stderr.write(`${fix.explanation}\n`);
     term(`${fix.command}\n`);
-    return;
+    trackFix("print", "success");
+    return { outcome: "success", props: {} };
   }
 
   if (fix.explanation) {
@@ -226,18 +251,22 @@ export async function runFix(promptArgs, config, opts = {}) {
         `Blocked: ${blocked.reason || "matches a guarded destructive pattern"}\n`
       );
     }
-    const action = await promptFixAction(Boolean(blocked));
+    const wasBlocked = Boolean(blocked);
+    const action = await promptFixAction(wasBlocked);
     if (action === "quit") {
       term("Nothing was run.\n");
-      return;
+      trackFix("cancel", "cancelled", { was_blocked: wasBlocked });
+      return { outcome: "cancelled", props: {} };
     }
     if (action === "copy") {
       copyToClipboard(current);
       term.dim("Copied to clipboard.\n");
+      trackFix("copy", "success", { was_blocked: wasBlocked });
       continue;
     }
     if (action === "edit") {
       current = await editFixedCommand(current);
+      trackFix("edit", "success", { was_blocked: wasBlocked });
       continue;
     }
     // run
@@ -245,10 +274,16 @@ export async function runFix(promptArgs, config, opts = {}) {
     const code = await runFixedCommand(current);
     if (code === 0) {
       term.dim("Command succeeded.\n");
-    } else {
-      term.red(`Command exited with code ${code}.\n`);
-      process.exitCode = code;
+      trackFix("run", "success", { was_blocked: wasBlocked, exit_code_class: exitCodeClass(code) });
+      return { outcome: "success", props: {} };
     }
-    return;
+    term.red(`Command exited with code ${code}.\n`);
+    process.exitCode = code;
+    trackFix("run", "failure", {
+      was_blocked: wasBlocked,
+      exit_code_class: exitCodeClass(code),
+      error_category: "shell",
+    });
+    return { outcome: "failure", props: {} };
   }
 }

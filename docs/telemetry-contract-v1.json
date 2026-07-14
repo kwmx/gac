@@ -1,0 +1,1980 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GAC telemetry contract",
+  "contract_version": 1,
+  "schema_version": 1,
+  "consent_version": 1,
+  "notice_version": 1,
+  "description": "Pseudonymous installation telemetry for GAC. Off by default; explicitly opt-in. The identifier links events from one installation over time and is not a count of unique people.",
+  "attribution": "Developed by alhisan >|",
+  "endpoints": {
+    "ingest": "https://api.getgac.dev/v1/events/batch",
+    "contract": "https://api.getgac.dev/v1/telemetry-contract",
+    "docs": "https://getgac.dev/telemetry",
+    "privacy": "https://getgac.dev/privacy"
+  },
+  "identifier": {
+    "kind": "pseudonymous installation id",
+    "derivation": "SHA-256(\"gac-telemetry-v1:\" + installationId)",
+    "format": "64 lowercase hexadecimal characters",
+    "notes": "installationId is a locally generated random UUID. It is not derived from any user, account, network, hardware, hostname, or filesystem attribute. The raw UUID is never transmitted. It changes when telemetry is disabled and re-enabled."
+  },
+  "ip_handling": "The service necessarily receives the source IP while processing the HTTPS request, but is designed not to persist it in its telemetry database or application logs.",
+  "transport": {
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "User-Agent": "gac/<version>",
+      "X-GAC-Telemetry-Schema": "1"
+    },
+    "limits": {
+      "max_events_per_request": 50,
+      "max_body_bytes": 65536,
+      "compression": "none",
+      "max_concurrent_batches": 1
+    },
+    "backoff_schedule_ms": [
+      60000,
+      300000,
+      1800000,
+      7200000,
+      28800000,
+      86400000
+    ]
+  },
+  "enums": {
+    "outcomes": [
+      "success",
+      "failure",
+      "cancelled",
+      "no_op"
+    ],
+    "error_categories": [
+      "validation",
+      "configuration",
+      "authentication",
+      "authorization",
+      "network",
+      "timeout",
+      "rate_limited",
+      "provider_4xx",
+      "provider_5xx",
+      "parse",
+      "filesystem",
+      "git",
+      "shell",
+      "blocked",
+      "empty_response",
+      "unknown"
+    ],
+    "platforms": [
+      "linux",
+      "darwin",
+      "win32",
+      "freebsd",
+      "other"
+    ],
+    "arches": [
+      "x64",
+      "arm64",
+      "arm",
+      "ia32",
+      "other"
+    ],
+    "providers": [
+      "openai_compatible",
+      "ollama",
+      "codex",
+      "unknown"
+    ],
+    "size_buckets": [
+      "none",
+      "1_100",
+      "101_500",
+      "501_2000",
+      "2001_10000",
+      "10001_50000",
+      "50001_plus"
+    ],
+    "count_buckets": [
+      "0",
+      "1",
+      "2_5",
+      "6_10",
+      "11_25",
+      "26_plus"
+    ],
+    "context_window_buckets": [
+      "unknown",
+      "up_to_8k",
+      "8k_to_32k",
+      "32k_to_128k",
+      "128k_plus"
+    ],
+    "attempt_count_buckets": [
+      "1",
+      "2",
+      "3_5",
+      "6_plus"
+    ],
+    "http_status_classes": [
+      "none",
+      "2xx",
+      "4xx",
+      "429",
+      "5xx"
+    ],
+    "exit_code_classes": [
+      "zero",
+      "one",
+      "two",
+      "three_to_10",
+      "11_to_127",
+      "128_plus",
+      "unknown"
+    ],
+    "input_modes": [
+      "none",
+      "arguments",
+      "stdin",
+      "files",
+      "stdin_and_files"
+    ]
+  },
+  "envelope_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "batch_id",
+      "schema_version",
+      "sent_at",
+      "events"
+    ],
+    "properties": {
+      "batch_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "schema_version": {
+        "const": 1
+      },
+      "sent_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "events": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 50,
+        "items": {
+          "oneOf": [
+            {
+              "$ref": "#/events/telemetry_enabled/schema"
+            },
+            {
+              "$ref": "#/events/command_completed/schema"
+            },
+            {
+              "$ref": "#/events/model_request_completed/schema"
+            },
+            {
+              "$ref": "#/events/chat_action_completed/schema"
+            },
+            {
+              "$ref": "#/events/runbook_plan_completed/schema"
+            },
+            {
+              "$ref": "#/events/runbook_step_completed/schema"
+            },
+            {
+              "$ref": "#/events/runbook_completed/schema"
+            },
+            {
+              "$ref": "#/events/commit_action_completed/schema"
+            },
+            {
+              "$ref": "#/events/fix_action_completed/schema"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "success_response_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": [
+      "request_id",
+      "accepted_event_ids",
+      "server_time"
+    ],
+    "properties": {
+      "request_id": {
+        "type": "string"
+      },
+      "accepted_event_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "duplicate_event_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "rejected": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "server_time": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "events": {
+    "telemetry_enabled": {
+      "description": "Emitted only after consent is saved (first-run prompt or manual enable).",
+      "actions": [
+        "first_run_prompt",
+        "manual_command"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "telemetry_enabled"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "first_run_prompt",
+              "manual_command"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "consent_version": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              }
+            }
+          }
+        }
+      }
+    },
+    "command_completed": {
+      "description": "One event per completed top-level command (excludes telemetry commands).",
+      "actions": [
+        "help",
+        "version",
+        "ask",
+        "suggest",
+        "explain",
+        "prompt",
+        "runbook",
+        "chat",
+        "models",
+        "config",
+        "auth",
+        "commit",
+        "fix",
+        "completions",
+        "unknown"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "command_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "help",
+              "version",
+              "ask",
+              "suggest",
+              "explain",
+              "prompt",
+              "runbook",
+              "chat",
+              "models",
+              "config",
+              "auth",
+              "commit",
+              "fix",
+              "completions",
+              "unknown"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "subcommand": {
+                "enum": [
+                  "view",
+                  "get",
+                  "set",
+                  "tui",
+                  "login",
+                  "logout",
+                  "status",
+                  "bash",
+                  "zsh",
+                  "fish",
+                  "unknown",
+                  null
+                ]
+              },
+              "input_mode": {
+                "enum": [
+                  "none",
+                  "arguments",
+                  "stdin",
+                  "files",
+                  "stdin_and_files"
+                ]
+              },
+              "prompt_size_bucket": {
+                "enum": [
+                  "none",
+                  "1_100",
+                  "101_500",
+                  "501_2000",
+                  "2001_10000",
+                  "10001_50000",
+                  "50001_plus"
+                ]
+              },
+              "file_count_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "response_size_bucket": {
+                "enum": [
+                  "none",
+                  "1_100",
+                  "101_500",
+                  "501_2000",
+                  "2001_10000",
+                  "10001_50000",
+                  "50001_plus"
+                ]
+              },
+              "streaming": {
+                "type": "boolean"
+              },
+              "render_markdown": {
+                "type": "boolean"
+              },
+              "show_thinking": {
+                "type": "boolean"
+              },
+              "detailed_context": {
+                "type": "boolean"
+              },
+              "detailed_suggest": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "model_request_completed": {
+      "description": "One event per provider generation request, measured around the request.",
+      "actions": [
+        "direct_prompt",
+        "chat_message",
+        "chat_retry",
+        "chat_title",
+        "runbook_plan",
+        "runbook_self_heal",
+        "commit_generate",
+        "commit_regenerate",
+        "fix_generate"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "model_request_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "direct_prompt",
+              "chat_message",
+              "chat_retry",
+              "chat_title",
+              "runbook_plan",
+              "runbook_self_heal",
+              "commit_generate",
+              "commit_regenerate",
+              "fix_generate"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "streaming": {
+                "type": "boolean"
+              },
+              "render_markdown": {
+                "type": "boolean"
+              },
+              "show_thinking": {
+                "type": "boolean"
+              },
+              "attempt_count_bucket": {
+                "enum": [
+                  "1",
+                  "2",
+                  "3_5",
+                  "6_plus"
+                ]
+              },
+              "input_size_bucket": {
+                "enum": [
+                  "none",
+                  "1_100",
+                  "101_500",
+                  "501_2000",
+                  "2001_10000",
+                  "10001_50000",
+                  "50001_plus"
+                ]
+              },
+              "output_size_bucket": {
+                "enum": [
+                  "none",
+                  "1_100",
+                  "101_500",
+                  "501_2000",
+                  "2001_10000",
+                  "10001_50000",
+                  "50001_plus"
+                ]
+              },
+              "message_count_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "trimmed_message_count_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "context_window_bucket": {
+                "enum": [
+                  "unknown",
+                  "up_to_8k",
+                  "8k_to_32k",
+                  "32k_to_128k",
+                  "128k_plus"
+                ]
+              },
+              "http_status_class": {
+                "enum": [
+                  "none",
+                  "2xx",
+                  "4xx",
+                  "429",
+                  "5xx"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "chat_action_completed": {
+      "description": "One event per chat action. No chat id/name/content/model.",
+      "actions": [
+        "session_new",
+        "session_resume",
+        "session_exit",
+        "message",
+        "retry",
+        "help",
+        "sessions",
+        "new",
+        "rename",
+        "system_view",
+        "system_set",
+        "system_reset",
+        "model_switch",
+        "copy",
+        "clear",
+        "export",
+        "delete"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "chat_action_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "session_new",
+              "session_resume",
+              "session_exit",
+              "message",
+              "retry",
+              "help",
+              "sessions",
+              "new",
+              "rename",
+              "system_view",
+              "system_set",
+              "system_reset",
+              "model_switch",
+              "copy",
+              "clear",
+              "export",
+              "delete"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "session_kind": {
+                "enum": [
+                  "new",
+                  "resumed",
+                  null
+                ]
+              },
+              "multiline": {
+                "type": "boolean"
+              },
+              "history_size_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "trimmed_message_count_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "copy_kind": {
+                "enum": [
+                  "code_block",
+                  "whole_reply",
+                  "none",
+                  null
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "runbook_plan_completed": {
+      "description": "Planning outcome. `preview` means non-interactive plan-only.",
+      "actions": [
+        "execute",
+        "dry_run",
+        "export",
+        "preview"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "runbook_plan_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "execute",
+              "dry_run",
+              "export",
+              "preview"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "step_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "notes_present": {
+                "type": "boolean"
+              },
+              "blocked_step_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "input_mode": {
+                "enum": [
+                  "none",
+                  "arguments",
+                  "stdin",
+                  "files",
+                  "stdin_and_files"
+                ]
+              },
+              "file_count_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "prompt_size_bucket": {
+                "enum": [
+                  "none",
+                  "1_100",
+                  "101_500",
+                  "501_2000",
+                  "2001_10000",
+                  "10001_50000",
+                  "50001_plus"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "runbook_step_completed": {
+      "description": "Per-step action. No command text, output, or repairs.",
+      "actions": [
+        "edit",
+        "skip",
+        "quit",
+        "run",
+        "self_heal_request",
+        "self_heal_result"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "runbook_step_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "edit",
+              "skip",
+              "quit",
+              "run",
+              "self_heal_request",
+              "self_heal_result"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "step_number": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "step_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "was_blocked": {
+                "type": "boolean"
+              },
+              "exit_code_class": {
+                "enum": [
+                  "zero",
+                  "one",
+                  "two",
+                  "three_to_10",
+                  "11_to_127",
+                  "128_plus",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "runbook_completed": {
+      "description": "Per-run aggregate counters (all clamped 0–100).",
+      "actions": [
+        "execute",
+        "dry_run",
+        "export",
+        "preview"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "runbook_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "execute",
+              "dry_run",
+              "export",
+              "preview"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "steps_total": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "steps_run": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "steps_succeeded": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "steps_failed": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "steps_skipped": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "steps_edited": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "blocked_encounters": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "self_heal_requests": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    "commit_action_completed": {
+      "description": "Commit funnel. No diff, message, branch, or repository identity.",
+      "actions": [
+        "generate",
+        "print",
+        "edit",
+        "regenerate",
+        "commit",
+        "cancel"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "commit_action_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "generate",
+              "print",
+              "edit",
+              "regenerate",
+              "commit",
+              "cancel"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "dry_run": {
+                "type": "boolean"
+              },
+              "staged_file_count_bucket": {
+                "enum": [
+                  "0",
+                  "1",
+                  "2_5",
+                  "6_10",
+                  "11_25",
+                  "26_plus"
+                ]
+              },
+              "diff_size_bucket": {
+                "enum": [
+                  "none",
+                  "1_100",
+                  "101_500",
+                  "501_2000",
+                  "2001_10000",
+                  "10001_50000",
+                  "50001_plus"
+                ]
+              },
+              "had_recent_history": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "fix_action_completed": {
+      "description": "Fix funnel. No command, error output, or generated fix.",
+      "actions": [
+        "generate",
+        "print",
+        "edit",
+        "copy",
+        "run",
+        "cancel"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at",
+          "anonymous_install_id",
+          "invocation_id",
+          "app_version",
+          "platform",
+          "arch",
+          "node_major",
+          "provider",
+          "interactive",
+          "action",
+          "outcome",
+          "duration_ms",
+          "error_category",
+          "properties"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "const": "fix_action_completed"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_install_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "invocation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "freebsd",
+              "other"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "x64",
+              "arm64",
+              "arm",
+              "ia32",
+              "other"
+            ]
+          },
+          "node_major": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "provider": {
+            "enum": [
+              "openai_compatible",
+              "ollama",
+              "codex",
+              "unknown"
+            ]
+          },
+          "interactive": {
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "generate",
+              "print",
+              "edit",
+              "copy",
+              "run",
+              "cancel"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "success",
+              "failure",
+              "cancelled",
+              "no_op"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "error_category": {
+            "enum": [
+              "validation",
+              "configuration",
+              "authentication",
+              "authorization",
+              "network",
+              "timeout",
+              "rate_limited",
+              "provider_4xx",
+              "provider_5xx",
+              "parse",
+              "filesystem",
+              "git",
+              "shell",
+              "blocked",
+              "empty_response",
+              "unknown",
+              null
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "enum": [
+                  "explicit",
+                  "shell_history"
+                ]
+              },
+              "piped_error_context": {
+                "type": "boolean"
+              },
+              "was_blocked": {
+                "type": "boolean"
+              },
+              "exit_code_class": {
+                "enum": [
+                  "zero",
+                  "one",
+                  "two",
+                  "three_to_10",
+                  "11_to_127",
+                  "128_plus",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "never_collected": [
+    "user prompts",
+    "model responses",
+    "chat messages",
+    "system prompts",
+    "shell commands",
+    "shell history",
+    "standard output",
+    "standard error",
+    "error text",
+    "exception messages",
+    "exception stacks",
+    "runbook command text",
+    "runbook descriptions",
+    "runbook notes",
+    "fixed command suggestions",
+    "fix explanations",
+    "commit messages",
+    "staged diffs",
+    "git log contents",
+    "git repository names",
+    "git organization names",
+    "git remote URLs",
+    "git branches",
+    "git commit hashes",
+    "file names",
+    "file paths",
+    "directory paths",
+    "file contents",
+    "current working directory",
+    "model names",
+    "model IDs",
+    "API base URLs",
+    "Ollama URLs",
+    "Codex URLs",
+    "arbitrary configuration values",
+    "API keys",
+    "OAuth tokens",
+    "cookies",
+    "authorization headers",
+    "ChatGPT account details",
+    "ChatGPT email addresses",
+    "ChatGPT subscription or plan details",
+    "environment variables",
+    "hostname",
+    "username",
+    "home-directory path",
+    "machine ID",
+    "MAC address",
+    "hardware serial numbers",
+    "IP address in an event",
+    "locale",
+    "timezone",
+    "country",
+    "city",
+    "derived geography",
+    "arbitrary user-controlled strings"
+  ]
+}

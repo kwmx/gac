@@ -12,6 +12,7 @@ import {
   contextBudget,
   trimMessagesToBudget,
 } from "./contextwindow.js";
+import { countBucket } from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
 
@@ -165,7 +166,7 @@ function printHistory(session, config) {
 // AI title generation
 // ─────────────────────────────────────────────────────────────────
 
-async function generateAiTitle(userMsg, aiMsg, config, contextWindow) {
+async function generateAiTitle(userMsg, aiMsg, config, contextWindow, telemetry) {
   try {
     const titleConfig = { ...config, stream: false, renderMarkdown: false, maxTokens: 12 };
     const msgs = [
@@ -179,7 +180,11 @@ async function generateAiTitle(userMsg, aiMsg, config, contextWindow) {
         content: `User: "${userMsg.slice(0, 300)}"\nAI: "${aiMsg.slice(0, 300)}"`,
       },
     ];
-    const raw = await chatCompletion(titleConfig, msgs, { contextWindow });
+    const raw = await chatCompletion(titleConfig, msgs, {
+      contextWindow,
+      telemetry,
+      telemetryAction: "chat_title",
+    });
     const title = (raw || "")
       .trim()
       .replace(/^["']|["'.,!?]$/g, "")
@@ -370,7 +375,7 @@ async function sessionPicker(config) {
 // ─────────────────────────────────────────────────────────────────
 
 // Returns { action: "exit"|"picker"|"new" }
-async function runChatSession(session, config, defaultSystemPrompt) {
+async function runChatSession(session, config, defaultSystemPrompt, telemetry) {
   // Resolved once per session (and again on /model switches); detection
   // results are cached per model, so this is at most one cheap probe.
   let contextWindow = await resolveContextWindow(config);
@@ -394,6 +399,35 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     : null;
 
   const isResume = session.messages.filter((m) => m.role !== "system").length > 0;
+  const sessionKind = isResume ? "resumed" : "new";
+
+  // Sanitized chat_action_completed telemetry. Never chat id/name, model,
+  // system prompt, message content, or export path — only coarse buckets.
+  const userCount = () => session.messages.filter((m) => m.role === "user").length;
+  const trackChat = (action, outcome, extra = {}) => {
+    if (!telemetry) return;
+    const properties = { session_kind: sessionKind };
+    if (extra.multiline !== undefined) properties.multiline = extra.multiline;
+    if (extra.history_size_bucket !== undefined) {
+      properties.history_size_bucket = extra.history_size_bucket;
+    }
+    if (extra.trimmed_message_count_bucket !== undefined) {
+      properties.trimmed_message_count_bucket = extra.trimmed_message_count_bucket;
+    }
+    if (extra.copy_kind !== undefined) properties.copy_kind = extra.copy_kind;
+    telemetry.track({
+      event_name: "chat_action_completed",
+      action,
+      outcome,
+      duration_ms: null,
+      error_category: null,
+      properties,
+    });
+  };
+  const backgroundFlush = () => {
+    if (telemetry) telemetry.flush({ timeoutMs: 1500 }).catch(() => {});
+  };
+  trackChat(isResume ? "session_resume" : "session_new", "success");
 
   const drawScreen = () => {
     term.clear();
@@ -431,6 +465,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
   term.on("key", onKey);
 
   while (true) {
+    let wasMultiline = false;
     term.bold.brightBlue("You ▶ ");
     let input = await new Promise((resolve) => {
       term.inputField(
@@ -446,6 +481,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
     // until a closing """ on its own line. A line that already contains its
     // own closing """ is an ordinary message and is sent as-is.
     if (input.startsWith('"""') && !input.slice(3).includes('"""')) {
+      wasMultiline = true;
       const first = input.slice(3).trim();
       const collected = first ? [first] : [];
       term.dim('  Multi-line input — finish with """ on its own line.\n');
@@ -489,22 +525,26 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         term.dim(`${desc}\n`);
       }
       term("\n");
+      trackChat("help", "success");
       continue;
     }
 
     if (input === "exit" || input === "quit") {
       cleanupInput();
       term("Bye.\n");
+      trackChat("session_exit", "success");
       return { action: "exit" };
     }
 
     if (input === "/sessions") {
       cleanupInput();
+      trackChat("sessions", "success");
       return { action: "picker" };
     }
 
     if (input === "/new") {
       cleanupInput();
+      trackChat("new", "success");
       return { action: "new" };
     }
 
@@ -520,6 +560,9 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         term(`${hr()}\n`);
         printCommandsHint();
         term("\n");
+        trackChat("rename", "success");
+      } else {
+        trackChat("rename", "no_op");
       }
       continue;
     }
@@ -539,6 +582,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         session.messages = [...messages];
         saveSession(session);
         term.dim("  System prompt reset to default.\n\n");
+        trackChat("system_reset", "success");
       } else if (arg) {
         session.customSystemPrompt = arg;
         const sysIdx = messages.findIndex((m) => m.role === "system");
@@ -547,6 +591,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         session.messages = [...messages];
         saveSession(session);
         term.dim("  System prompt updated.\n\n");
+        trackChat("system_set", "success");
       } else {
         // Show current
         const current =
@@ -556,6 +601,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         term.dim(`  ${"─".repeat(38)}\n`);
         term.dim(`  ${current.replace(/\n/g, "\n  ")}\n\n`);
         term.dim('  To change: /system <new prompt>   To reset: /system reset\n\n');
+        trackChat("system_view", "success");
       }
       continue;
     }
@@ -577,7 +623,10 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         models.map((m) => `  ${m}`),
         { selectedIndex: Math.max(models.indexOf(getActiveModel(config)), 0) }
       );
-      if (idx === null) continue;
+      if (idx === null) {
+        trackChat("model_switch", "cancelled");
+        continue;
+      }
       // Codex keeps its own model key so provider switches stay independent.
       config[getActiveModelKey(config)] = models[idx];
       // The new model may have a different context window and response cap.
@@ -590,6 +639,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       term(`${hr()}\n`);
       printCommandsHint();
       term("\n");
+      trackChat("model_switch", "success");
       continue;
     }
 
@@ -597,6 +647,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       const lastAi = [...messages].reverse().find((m) => m.role === "assistant");
       if (!lastAi) {
         term.dim("  Nothing to copy yet.\n\n");
+        trackChat("copy", "no_op", { copy_kind: "none" });
         continue;
       }
       const block = extractLastCodeBlock(lastAi.content);
@@ -606,6 +657,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
           ? "  Copied the last code block to the clipboard.\n\n"
           : "  No code block found — copied the whole reply.\n\n"
       );
+      trackChat("copy", "success", { copy_kind: block ? "code_block" : "whole_reply" });
       continue;
     }
 
@@ -613,6 +665,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       cleanupInput();
       deleteSession(session.id);
       term.dim("  Chat deleted.\n");
+      trackChat("delete", "success");
       return { action: "picker" };
     }
 
@@ -625,6 +678,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       saveSession(session);
       inputHistory.length = 0;
       term.dim("  History cleared.\n\n");
+      trackChat("clear", "success");
       continue;
     }
 
@@ -632,6 +686,7 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       const lastAiIdx = messages.map((m) => m.role).lastIndexOf("assistant");
       if (lastAiIdx === -1) {
         term.dim("  Nothing to retry.\n\n");
+        trackChat("retry", "no_op");
         continue;
       }
       // Remove the last assistant reply so we can regenerate, but keep it so
@@ -651,12 +706,19 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       term.bold.brightGreen("AI  ◀ ");
       let retryReply;
       try {
-        retryReply = await chatCompletion(config, retryTrim.messages, { contextWindow });
+        retryReply = await chatCompletion(config, retryTrim.messages, {
+          contextWindow,
+          telemetry,
+          telemetryAction: "chat_retry",
+        });
       } catch (err) {
         // Restore the previous reply so a failed retry doesn't lose it.
         messages.splice(lastAiIdx, 0, previousReply);
         session.messages = [...messages];
         term.red(`\nError: ${err.message}\n\n`);
+        trackChat("retry", "failure", {
+          trimmed_message_count_bucket: countBucket(retryTrim.dropped),
+        });
         continue;
       }
       if (!config.stream) {
@@ -672,6 +734,9 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         messages.push({ role: "assistant", content: retryReply });
         session.messages = [...messages];
         saveSession(session);
+        trackChat("retry", "success", {
+          trimmed_message_count_bucket: countBucket(retryTrim.dropped),
+        });
       } else {
         // An empty regeneration must not destroy the answer it was meant to
         // replace — put the previous reply back.
@@ -679,7 +744,11 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         session.messages = [...messages];
         saveSession(session);
         term.dim("  Retry returned nothing; keeping the previous reply.\n\n");
+        trackChat("retry", "no_op", {
+          trimmed_message_count_bucket: countBucket(retryTrim.dropped),
+        });
       }
+      backgroundFlush();
       continue;
     }
 
@@ -690,8 +759,10 @@ async function runChatSession(session, config, defaultSystemPrompt) {
         const outPath = exportChat(session);
         term.dim(`  Exported to: `);
         term.brightCyan(`${outPath}\n\n`);
+        trackChat("export", "success");
       } catch (err) {
         term.red(`  Export failed: ${err.message}\n\n`);
+        trackChat("export", "failure", {});
       }
       continue;
     }
@@ -714,13 +785,24 @@ async function runChatSession(session, config, defaultSystemPrompt) {
 
     term.bold.brightGreen("AI  ◀ ");
 
+    const messageProps = {
+      multiline: wasMultiline,
+      history_size_bucket: countBucket(userCount()),
+      trimmed_message_count_bucket: countBucket(trimmed.dropped),
+    };
+
     let reply;
     try {
-      reply = await chatCompletion(config, trimmed.messages, { contextWindow });
+      reply = await chatCompletion(config, trimmed.messages, {
+        contextWindow,
+        telemetry,
+        telemetryAction: "chat_message",
+      });
     } catch (err) {
       term.red(`\nError: ${err.message}\n\n`);
       messages.pop();
       inputHistory.pop();
+      trackChat("message", "failure", messageProps);
       continue;
     }
 
@@ -746,11 +828,12 @@ async function runChatSession(session, config, defaultSystemPrompt) {
       messages.push({ role: "assistant", content: reply });
       session.messages = [...messages];
       saveSession(session);
+      trackChat("message", "success", messageProps);
 
       // Generate and apply title after the first exchange (awaited to avoid
       // concurrent requests to the LLM server, which often handles only one at a time)
       if (!session.autoNamed && messages.filter((m) => m.role === "user").length === 1) {
-        const title = await generateAiTitle(input, reply, config, contextWindow);
+        const title = await generateAiTitle(input, reply, config, contextWindow, telemetry);
         if (title) {
           session.name = title;
           session.autoNamed = true;
@@ -762,7 +845,10 @@ async function runChatSession(session, config, defaultSystemPrompt) {
           term("\n");
         }
       }
+    } else {
+      trackChat("message", "no_op", messageProps);
     }
+    backgroundFlush();
   }
 }
 
@@ -770,7 +856,23 @@ async function runChatSession(session, config, defaultSystemPrompt) {
 // Public entry point
 // ─────────────────────────────────────────────────────────────────
 
-export async function runChat(config, defaultSystemPrompt) {
+export async function runChat(config, defaultSystemPrompt, opts = {}) {
+  const telemetry = opts.telemetry;
+  // chat exits via term.processExit(), so the top-level command_completed event
+  // and final flush are emitted here rather than back in cli.js.
+  const finalizeChat = async () => {
+    if (!telemetry) return;
+    telemetry.track({
+      event_name: "command_completed",
+      action: "chat",
+      outcome: "success",
+      duration_ms: null,
+      error_category: null,
+      properties: {},
+    });
+    await telemetry.flush({ timeoutMs: 300 });
+  };
+
   let state = "picker";
   let session = null;
 
@@ -778,6 +880,7 @@ export async function runChat(config, defaultSystemPrompt) {
     if (state === "picker") {
       const result = await sessionPicker(config);
       if (result.action === "exit") {
+        await finalizeChat();
         term.processExit(0);
         return;
       }
@@ -792,8 +895,9 @@ export async function runChat(config, defaultSystemPrompt) {
         state = "chat";
       }
     } else {
-      const result = await runChatSession(session, config, defaultSystemPrompt);
+      const result = await runChatSession(session, config, defaultSystemPrompt, telemetry);
       if (result.action === "exit") {
+        await finalizeChat();
         term.processExit(0);
         return;
       }

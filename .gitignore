@@ -9,3 +9,4 @@ build/
 coverage/
 .idea/
 *.log
+.claude/

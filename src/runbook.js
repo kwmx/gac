@@ -16,6 +16,13 @@ import {
   contextBudget,
   estimateTokens,
 } from "./contextwindow.js";
+import {
+  clampCount,
+  countBucket,
+  sizeBucket,
+  exitCodeClass,
+  inputMode,
+} from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -402,7 +409,7 @@ function tail(text, maxChars) {
 }
 
 // Ask the model for a corrected command after a step failed.
-async function requestCommandFix(entry, result, config) {
+async function requestCommandFix(entry, result, config, telemetry) {
   const system = buildSystemPrompt("fix", config);
   const errorOutput = tail(result.stderr, 2000);
   const stdoutTail = tail(result.stdout, 1000);
@@ -425,11 +432,15 @@ async function requestCommandFix(entry, result, config) {
     debugRender: false,
   };
   try {
-    const reply = await chatCompletion(fixConfig, [
-      { role: "system", content: system },
-      { role: "system", content: `Relevant context:\n${buildRunbookContext()}` },
-      { role: "user", content: user },
-    ]);
+    const reply = await chatCompletion(
+      fixConfig,
+      [
+        { role: "system", content: system },
+        { role: "system", content: `Relevant context:\n${buildRunbookContext()}` },
+        { role: "user", content: user },
+      ],
+      { telemetry, telemetryAction: "runbook_self_heal" }
+    );
     return extractCommandFix(extractJsonPayload(reply));
   } catch (err) {
     term.red(`Fix request failed: ${err.message}\n`);
@@ -485,19 +496,110 @@ async function requestRunbookPlan(prompt, config, opts) {
     debugRender: false,
   };
 
-  const reply = await chatCompletion(runbookConfig, messages, { contextWindow });
+  const reply = await chatCompletion(runbookConfig, messages, {
+    contextWindow,
+    telemetry: opts.telemetry,
+    telemetryAction: "runbook_plan",
+  });
   const payload = extractJsonPayload(reply);
   return normalizeRunbookCommands(payload);
 }
 
 export async function runRunbook(prompt, config, opts = {}) {
+  const telemetry = opts.telemetry;
+  // The run "mode" drives the plan/completed action names.
+  const mode = opts.exportPath
+    ? "export"
+    : opts.dryRun
+    ? "dry_run"
+    : opts.interactive
+    ? "execute"
+    : "preview";
+
   const { commands, notes } = await requestRunbookPlan(prompt, config, opts);
-  if (!commands.length) {
-    term("No runnable commands were returned. Try rephrasing your request.\n");
-    return;
-  }
 
   const blockedList = loadBlockedCommands();
+  const blockedAtPlan = commands.filter((c) => findBlockedCommand(c.command, blockedList)).length;
+
+  const planProps = {
+    step_count: clampCount(commands.length),
+    notes_present: notes.length > 0,
+    blocked_step_count: clampCount(blockedAtPlan),
+    input_mode: inputMode({
+      hasArguments: Boolean(prompt && String(prompt).trim()),
+      hasStdin: Boolean(opts.piped),
+      hasFiles: Boolean(opts.files && opts.files.length),
+    }),
+    file_count_bucket: countBucket(opts.files ? opts.files.length : 0),
+    prompt_size_bucket: sizeBucket(String(prompt || "").length),
+  };
+  const trackPlan = (outcome) => {
+    if (!telemetry) return;
+    telemetry.track({
+      event_name: "runbook_plan_completed",
+      action: mode,
+      outcome,
+      duration_ms: null,
+      error_category: null,
+      properties: planProps,
+    });
+  };
+
+  // Per-run aggregate counters (all clamped 0–100 at emit time).
+  const stats = {
+    steps_total: commands.length,
+    steps_run: 0,
+    steps_succeeded: 0,
+    steps_failed: 0,
+    steps_skipped: 0,
+    steps_edited: 0,
+    blocked_encounters: 0,
+    self_heal_requests: 0,
+  };
+  const trackRunbook = (outcome) => {
+    if (!telemetry) return;
+    telemetry.track({
+      event_name: "runbook_completed",
+      action: mode,
+      outcome,
+      duration_ms: null,
+      error_category: null,
+      properties: {
+        steps_total: clampCount(stats.steps_total),
+        steps_run: clampCount(stats.steps_run),
+        steps_succeeded: clampCount(stats.steps_succeeded),
+        steps_failed: clampCount(stats.steps_failed),
+        steps_skipped: clampCount(stats.steps_skipped),
+        steps_edited: clampCount(stats.steps_edited),
+        blocked_encounters: clampCount(stats.blocked_encounters),
+        self_heal_requests: clampCount(stats.self_heal_requests),
+      },
+    });
+  };
+  const trackStep = (action, outcome, extra = {}) => {
+    if (!telemetry) return;
+    const properties = {
+      step_number: clampCount(extra.stepNumber ?? 0),
+      step_count: clampCount(commands.length),
+      was_blocked: Boolean(extra.wasBlocked),
+    };
+    if (extra.exitCodeClass !== undefined) properties.exit_code_class = extra.exitCodeClass;
+    telemetry.track({
+      event_name: "runbook_step_completed",
+      action,
+      outcome,
+      duration_ms: null,
+      error_category: extra.errorCategory ?? null,
+      properties,
+    });
+  };
+
+  if (!commands.length) {
+    term("No runnable commands were returned. Try rephrasing your request.\n");
+    trackPlan("no_op");
+    trackRunbook("no_op");
+    return { outcome: "no_op", props: {} };
+  }
 
   term("Planned commands:\n");
   printRunbookCommands(commands);
@@ -517,30 +619,40 @@ export async function runRunbook(prompt, config, opts = {}) {
     const resolved = path.resolve(process.cwd(), opts.exportPath);
     fs.writeFileSync(resolved, script, format === "bash" ? { mode: 0o755 } : undefined);
     term(`Runbook written to ${resolved}. Nothing was executed.\n`);
-    return;
+    trackPlan("success");
+    trackRunbook("success");
+    return { outcome: "success", props: {} };
   }
 
   if (opts.dryRun) {
     term("Dry run: no commands were executed.\n");
-    return;
+    trackPlan("success");
+    trackRunbook("success");
+    return { outcome: "success", props: {} };
   }
 
   if (!opts.interactive) {
     term(
       "Not an interactive terminal: showing the plan only. Use --export <path> to save it as a script.\n"
     );
-    return;
+    trackPlan("success");
+    trackRunbook("success");
+    return { outcome: "success", props: {} };
   }
+
+  trackPlan("success");
 
   const ready = await confirmRunbookStart();
   if (!ready) {
     term("Runbook execution canceled.\n");
-    return;
+    trackRunbook("cancelled");
+    return { outcome: "cancelled", props: {} };
   }
 
   const runner = createCommandRunner();
   for (let i = 0; i < commands.length; i += 1) {
     const entry = commands[i];
+    const stepNumber = i + 1;
 
     term(`\nStep ${i + 1} of ${commands.length}:\n`);
     if (entry.description) {
@@ -550,17 +662,22 @@ export async function runRunbook(prompt, config, opts = {}) {
     let stepDone = false;
     while (!stepDone) {
       let action;
+      let wasBlocked = false;
       while (true) {
         term(`Command: ${entry.command}\n`);
         const blocked = findBlockedCommand(entry.command, blockedList);
+        wasBlocked = Boolean(blocked);
         if (blocked) {
+          stats.blocked_encounters += 1;
           term.red(
             `Blocked: ${blocked.reason || "matches a guarded destructive pattern"}\n`
           );
         }
-        action = await promptRunbookAction(Boolean(blocked));
+        action = await promptRunbookAction(wasBlocked);
         if (action === "edit") {
           entry.command = await editCommand(entry.command);
+          stats.steps_edited += 1;
+          trackStep("edit", "success", { stepNumber, wasBlocked });
           continue;
         }
         break;
@@ -568,24 +685,42 @@ export async function runRunbook(prompt, config, opts = {}) {
 
       if (action === "skip") {
         term.dim(`Skipped step ${i + 1}.\n`);
+        stats.steps_skipped += 1;
+        trackStep("skip", "success", { stepNumber, wasBlocked });
         stepDone = true;
         continue;
       }
       if (action === "quit") {
         term(`Stopped at step ${i + 1}.\n`);
         printRemainingCommands(commands, i);
+        trackStep("quit", "cancelled", { stepNumber, wasBlocked });
         runner.close();
-        return;
+        trackRunbook("cancelled");
+        return { outcome: "cancelled", props: {} };
       }
 
       term(`\n$ ${entry.command}\n`);
       const result = await runner.run(entry.command);
+      stats.steps_run += 1;
       if (result.code === 0) {
         term("\n");
+        stats.steps_succeeded += 1;
+        trackStep("run", "success", {
+          stepNumber,
+          wasBlocked,
+          exitCodeClass: exitCodeClass(result.code),
+        });
         stepDone = true;
         continue;
       }
 
+      stats.steps_failed += 1;
+      trackStep("run", "failure", {
+        stepNumber,
+        wasBlocked,
+        exitCodeClass: exitCodeClass(result.code),
+        errorCategory: "shell",
+      });
       term(`\nCommand failed (step ${i + 1}) with exit code ${result.code}.\n`);
       if (result.stderr.trim()) {
         term(`Issue:\n${result.stderr}\n`);
@@ -593,23 +728,31 @@ export async function runRunbook(prompt, config, opts = {}) {
       const failureAction = await promptFailureAction();
       if (failureAction === "skip") {
         term.dim(`Skipping step ${i + 1}.\n`);
+        stats.steps_skipped += 1;
+        trackStep("skip", "success", { stepNumber, wasBlocked });
         stepDone = true;
         continue;
       }
       if (failureAction === "quit") {
         term(`Stopped at step ${i + 1}.\n`);
         printRemainingCommands(commands, i + 1);
+        trackStep("quit", "cancelled", { stepNumber, wasBlocked });
         runner.close();
-        return;
+        trackRunbook("cancelled");
+        return { outcome: "cancelled", props: {} };
       }
       // Self-heal: ask the model for a corrected command; it re-enters the
       // normal run/edit/skip gate (including the blocklist check) above.
       term.dim("Asking the model for a fix...\n");
-      const fix = await requestCommandFix(entry, result, config);
+      stats.self_heal_requests += 1;
+      trackStep("self_heal_request", "success", { stepNumber, wasBlocked });
+      const fix = await requestCommandFix(entry, result, config, telemetry);
       if (!fix) {
         term("No usable fix was returned.\n");
+        trackStep("self_heal_result", "no_op", { stepNumber, wasBlocked });
         continue;
       }
+      trackStep("self_heal_result", "success", { stepNumber, wasBlocked });
       if (fix.explanation) {
         term.dim(`Suggested fix: ${fix.explanation}\n`);
       }
@@ -619,4 +762,6 @@ export async function runRunbook(prompt, config, opts = {}) {
 
   runner.close();
   term("All commands completed successfully.\n");
+  trackRunbook("success");
+  return { outcome: "success", props: {} };
 }
