@@ -87,7 +87,11 @@ const FIELDS = [
     prompt: "Codex model (used only when provider is codex)",
   },
   { key: "temperature", label: "Temperature", prompt: "Temperature" },
-  { key: "maxTokens", label: "Max Tokens", prompt: "Max Tokens" },
+  {
+    key: "maxTokens",
+    label: "Max Tokens",
+    prompt: "Max Tokens (0 or less for no limit)",
+  },
   {
     key: "contextWindow",
     label: "Context Window",

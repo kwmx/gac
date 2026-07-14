@@ -204,6 +204,9 @@ export async function resolveContextWindow(config) {
 }
 
 // Tokens available for the prompt once the response reservation is taken out.
+// An uncapped maxTokens (<= 0, meaning "answer as long as necessary") still
+// reserves the 2048-token default so prompt trimming leaves the response a
+// sane amount of room.
 export function contextBudget(contextWindow, maxTokens) {
   const window = contextWindow || FALLBACK_CONTEXT_TOKENS;
   const reserve = Number(maxTokens) > 0 ? Number(maxTokens) : 2048;
@@ -235,8 +238,16 @@ export function trimMessagesToBudget(messages, budgetTokens) {
 // conversation instead of the model maximum, so large-context models don't
 // balloon memory for short chats.
 export function resolveGenerationBudget(config, messages, contextWindow) {
-  const configured =
-    Number(config?.maxTokens) > 0 ? Math.floor(Number(config.maxTokens)) : 2048;
+  const raw = Number(config?.maxTokens);
+  // A maxTokens explicitly configured at 0 or below means "no response cap":
+  // the model may answer as long as it needs, bounded only by its context
+  // window. maxTokens is null so providers omit the cap from the request; the
+  // full window goes to num_ctx because the reply may legitimately fill
+  // whatever the prompt leaves.
+  if (config?.maxTokens != null && Number.isFinite(raw) && raw <= 0) {
+    return { maxTokens: null, numCtx: contextWindow || null };
+  }
+  const configured = raw > 0 ? Math.floor(raw) : 2048;
   if (!contextWindow) {
     return { maxTokens: configured, numCtx: null };
   }

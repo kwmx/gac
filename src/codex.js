@@ -313,8 +313,10 @@ function buildCodexPayload(model, instructions, input, budget) {
     prompt_cache_key: sessionId,
   };
   // Honor the response cap every other provider applies (config.maxTokens,
-  // clamped by the caller). Note: `temperature` is intentionally not sent —
-  // the Codex backend manages sampling and rejects overrides.
+  // clamped by the caller). A null cap (maxTokens <= 0 in config, meaning
+  // unlimited) leaves max_output_tokens unset so the backend imposes no
+  // limit. Note: `temperature` is intentionally not sent — the Codex backend
+  // manages sampling and rejects overrides.
   if (Number(budget?.maxTokens) > 0) {
     payload.max_output_tokens = Math.floor(Number(budget.maxTokens));
   }

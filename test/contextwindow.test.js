@@ -125,6 +125,31 @@ test("resolveGenerationBudget never raises a deliberately small maxTokens", () =
   assert.equal(budget.maxTokens, 12);
 });
 
+test("resolveGenerationBudget lifts the cap when maxTokens is 0 or less", () => {
+  // maxTokens <= 0 means "answer as long as necessary": no response cap, and
+  // Ollama gets the full model window since the reply may fill it.
+  const uncapped = resolveGenerationBudget(
+    { maxTokens: 0 },
+    [{ role: "user", content: "hi" }],
+    8192
+  );
+  assert.equal(uncapped.maxTokens, null);
+  assert.equal(uncapped.numCtx, 8192);
+
+  const negative = resolveGenerationBudget({ maxTokens: -1 }, [], null);
+  assert.equal(negative.maxTokens, null);
+  assert.equal(negative.numCtx, null);
+
+  // A missing maxTokens still falls back to the 2048 default, not unlimited.
+  const missing = resolveGenerationBudget({}, [], null);
+  assert.equal(missing.maxTokens, 2048);
+});
+
+test("contextBudget keeps the default response reserve when the cap is lifted", () => {
+  assert.equal(contextBudget(8192, 0), contextBudget(8192, 2048));
+  assert.equal(contextBudget(8192, -5), contextBudget(8192, 2048));
+});
+
 test("resolveGenerationBudget quantizes num_ctx so it stays stable across turns", () => {
   // Ollama reloads the model when num_ctx changes; growing prompts must land
   // on the same power-of-two step, not a new value every message.
