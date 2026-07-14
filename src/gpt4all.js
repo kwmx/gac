@@ -5,7 +5,12 @@ import {
   resolveMaxTokens,
   resolveGenerationBudget,
 } from "./contextwindow.js";
-import { codexChatCompletion, listCodexModels, resolveCodexModel } from "./codex.js";
+import {
+  codexChatCompletion,
+  listCodexModels,
+  fetchCodexModels,
+  resolveCodexModel,
+} from "./codex.js";
 import { sizeBucket, countBucket, contextWindowBucket } from "./telemetry/buckets.js";
 import { classifyModelError } from "./telemetry/errors.js";
 
@@ -461,7 +466,17 @@ export async function listModels(config) {
   const provider = getProvider(config);
   const timeoutMs = Number(config.requestTimeoutMs);
   if (provider === "codex") {
-    return listCodexModels();
+    // Prefer the backend's authoritative, plan-filtered list; fall back to the
+    // static set only when the network/backend fails. Auth problems (not signed
+    // in, expired session) are actionable, so let those surface unchanged.
+    try {
+      return await fetchCodexModels(config);
+    } catch (err) {
+      if (/sign(ed)?[ -]?in|auth login|credentials/i.test(err.message)) {
+        throw err;
+      }
+      return listCodexModels();
+    }
   }
   if (provider === "ollama") {
     const baseUrl = normalizeOllamaBaseUrl(config.ollamaBaseUrl);

@@ -6,18 +6,38 @@ import { getCodexCredentials } from "./codexauth.js";
 const { terminal: term } = terminalKit;
 
 export const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
-export const DEFAULT_CODEX_MODEL = "gpt-5.1-codex";
+export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 
-// The Codex backend has no model-listing endpoint; this is the model family
-// it serves for ChatGPT-plan accounts. Any Responses-capable model id can
-// still be set manually via `gac config set codexModel <id>`.
+// Codex CLI version claimed to the backend when listing models. The `/models`
+// endpoint hides any model whose `minimal_client_version` is higher than this,
+// so a fixed real version would stop surfacing the next model generation the
+// moment OpenAI ships it. We instead claim an always-ahead sentinel so every
+// model the account's plan is entitled to shows up automatically — no code bump
+// needed as OpenAI rotates models. Override with `gac config set
+// codexClientVersion <x.y.z>` on the rare chance the backend ever wants a real
+// version.
+export const CODEX_CLIENT_VERSION = "9999.0.0";
+
+export function resolveCodexClientVersion(config) {
+  const version =
+    typeof config?.codexClientVersion === "string" ? config.codexClientVersion.trim() : "";
+  return version || CODEX_CLIENT_VERSION;
+}
+
+// Static fallback used only when the live `/models` endpoint (see
+// fetchCodexModels) can't be reached. OpenAI rotates which models a ChatGPT
+// plan may use, retiring old ids with a 400 ("...not supported when using Codex
+// with a ChatGPT account"), so this list will drift over time — the live
+// endpoint is authoritative. Any Responses-capable id can still be set manually
+// via `gac config set codexModel <id>`.
 export const CODEX_MODELS = [
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex",
-  "gpt-5.1-codex-mini",
-  "gpt-5.1",
-  "gpt-5-codex",
-  "gpt-5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-spark",
 ];
 
 // One id per process: reused as session/prompt-cache key across requests so
@@ -38,6 +58,66 @@ export function resolveCodexModel(config) {
 
 export function listCodexModels() {
   return [...CODEX_MODELS];
+}
+
+// Live model list for the signed-in ChatGPT account. The backend exposes an
+// authoritative, plan-filtered catalog at `/models` — unlike the static
+// CODEX_MODELS fallback it reflects exactly what the account can use right now,
+// so gac never offers a model the plan has since retired. Returns slugs of the
+// user-selectable ("list") models, most-preferred first. Throws on
+// auth/network/backend failure; callers fall back to listCodexModels().
+export async function fetchCodexModels(config) {
+  const base = normalizeCodexBaseUrl(config?.codexBaseUrl);
+  const clientVersion = resolveCodexClientVersion(config);
+  const url = `${base}/models?client_version=${encodeURIComponent(clientVersion)}`;
+  const { accessToken, accountId } = await getCodexCredentials();
+  const configTimeout = Number(config?.requestTimeoutMs);
+  const timeoutMs =
+    Number.isFinite(configTimeout) && configTimeout > 0
+      ? Math.min(configTimeout, 30000)
+      : 30000;
+  const timeout = createTimeoutController(timeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        "chatgpt-account-id": accountId,
+        originator: "codex_cli_rs",
+      },
+      signal: timeout ? timeout.controller.signal : undefined,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(`Codex model list request timed out after ${timeoutMs}ms.`);
+    }
+    throw new Error(`Failed to reach ${url}. (${err.message})`);
+  } finally {
+    if (timeout) clearTimeout(timeout.timeoutId);
+  }
+  if (!response.ok) {
+    throw await codexHttpError(response, await response.text());
+  }
+  let data;
+  try {
+    data = JSON.parse(await response.text());
+  } catch (err) {
+    throw new Error("Codex model list returned a non-JSON response.");
+  }
+  return selectCodexModelSlugs(data);
+}
+
+// Pull the user-selectable model slugs out of a `/models` response: keep only
+// the ones the backend marks visibility "list" (hiding internal models like
+// codex-auto-review), ordered most-preferred first by `priority` (lower wins).
+export function selectCodexModelSlugs(data) {
+  const models = Array.isArray(data?.models) ? data.models : [];
+  return models
+    .filter((model) => model && typeof model.slug === "string" && model.visibility === "list")
+    .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0))
+    .map((model) => model.slug);
 }
 
 // Chat-completions messages -> Responses API shape: system messages become
@@ -362,6 +442,32 @@ async function codexHttpError(response, text) {
   return new Error(`Codex error ${response.status}: ${message}`);
 }
 
+// OpenAI periodically retires models for ChatGPT-plan accounts; a request for a
+// retired id returns a 400 like "The '<model>' model is not supported when using
+// Codex with a ChatGPT account." Turn that into an actionable error listing the
+// models the plan currently supports and the exact command to switch.
+async function codexModelUnavailableError(config, model, text) {
+  const detail =
+    extractCodexErrorMessage(text) ||
+    `The '${model}' model is not supported for your ChatGPT plan.`;
+  let available = [];
+  try {
+    available = await fetchCodexModels(config);
+  } catch (err) {
+    // Best-effort: without a live list we still give a clear next step.
+  }
+  if (!available.length) {
+    return new Error(
+      `Codex error 400: ${detail} Run \`gac models\` to pick one your plan currently supports.`
+    );
+  }
+  return new Error(
+    `Codex error 400: ${detail}\n` +
+      `Your ChatGPT plan currently supports: ${available.join(", ")}.\n` +
+      `Switch with \`gac config set codexModel ${available[0]}\` or run \`gac models\` to choose interactively.`
+  );
+}
+
 export async function codexChatCompletion(config, messages, budget) {
   let credentials = await getCodexCredentials();
   const model = resolveCodexModel(config);
@@ -420,6 +526,12 @@ export async function codexChatCompletion(config, messages, budget) {
         ];
         payload = buildCodexPayload(model, null, merged, budget);
         continue;
+      }
+
+      // The configured model was retired for this ChatGPT plan: surface the
+      // current model list and how to switch instead of a cryptic 400.
+      if (/\bnot supported\b/i.test(text) && /model/i.test(text)) {
+        throw await codexModelUnavailableError(config, model, text);
       }
     }
 

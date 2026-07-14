@@ -12,8 +12,13 @@ const DEFAULT_CONFIG = {
   apiKey: "",
   model: "gpt4all",
   // Model used only when provider is "codex"; kept separate from `model` so
-  // switching providers back and forth never breaks either setup.
-  codexModel: "gpt-5.1-codex",
+  // switching providers back and forth never breaks either setup. `gac models`
+  // reads the live per-account catalog, so this is only a starting default.
+  codexModel: "gpt-5.6-sol",
+  // Optional override for the Codex CLI version claimed when listing models
+  // (see CODEX_CLIENT_VERSION). null means use gac's always-ahead default so new
+  // model generations surface automatically; set a real "x.y.z" only if needed.
+  codexClientVersion: null,
   temperature: 0.7,
   // "auto" takes the response cap from the selected model's definition
   // (re-detected when the model changes) and falls back to 2048 when the

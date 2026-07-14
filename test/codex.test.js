@@ -8,9 +8,12 @@ import {
   extractCodexErrorMessage,
   normalizeCodexBaseUrl,
   resolveCodexModel,
+  resolveCodexClientVersion,
   listCodexModels,
+  selectCodexModelSlugs,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_BASE_URL,
+  CODEX_CLIENT_VERSION,
 } from "../src/codex.js";
 
 test("convertMessagesToCodexInput maps roles to Responses API items", () => {
@@ -119,4 +122,30 @@ test("listCodexModels returns a fresh copy including the default", () => {
   assert.ok(models.includes(DEFAULT_CODEX_MODEL));
   models.push("mutated");
   assert.ok(!listCodexModels().includes("mutated"));
+});
+
+test("resolveCodexClientVersion prefers an override and falls back to the sentinel", () => {
+  assert.equal(resolveCodexClientVersion({ codexClientVersion: "0.144.4" }), "0.144.4");
+  assert.equal(resolveCodexClientVersion({ codexClientVersion: "  " }), CODEX_CLIENT_VERSION);
+  assert.equal(resolveCodexClientVersion({ codexClientVersion: null }), CODEX_CLIENT_VERSION);
+  assert.equal(resolveCodexClientVersion({}), CODEX_CLIENT_VERSION);
+});
+
+test("selectCodexModelSlugs keeps listed models, drops hidden, sorts by priority", () => {
+  const data = {
+    models: [
+      { slug: "gpt-5.4", visibility: "list", priority: 16 },
+      { slug: "codex-auto-review", visibility: "hide", priority: 43 },
+      { slug: "gpt-5.6-sol", visibility: "list", priority: 1 },
+      { slug: "gpt-5.5", visibility: "list", priority: 7 },
+    ],
+  };
+  assert.deepEqual(selectCodexModelSlugs(data), ["gpt-5.6-sol", "gpt-5.5", "gpt-5.4"]);
+});
+
+test("selectCodexModelSlugs tolerates malformed payloads", () => {
+  assert.deepEqual(selectCodexModelSlugs(null), []);
+  assert.deepEqual(selectCodexModelSlugs({}), []);
+  assert.deepEqual(selectCodexModelSlugs({ models: "nope" }), []);
+  assert.deepEqual(selectCodexModelSlugs({ models: [null, { visibility: "list" }] }), []);
 });

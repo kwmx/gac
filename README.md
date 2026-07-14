@@ -169,7 +169,8 @@ gac ask "how do I list open ports?"
 - `gac auth status` shows who is signed in (and the plan); `gac auth logout` removes the stored credentials.
 - If you already use the Codex CLI, gac reuses your existing `~/.codex/auth.json` login automatically — no second sign-in needed.
 - Tokens are stored in `~/.gac/codex-auth.json` and refreshed automatically when they expire.
-- The Codex provider has its own model setting (`codexModel`, default `gpt-5.1-codex`), so you can switch between `openai`, `ollama`, and `codex` freely without breaking either setup. `gac models` and `/model` in chat edit the right one for the active provider.
+- The Codex provider has its own model setting (`codexModel`, default `gpt-5.6-sol`), so you can switch between `openai`, `ollama`, and `codex` freely without breaking either setup. `gac models` and `/model` in chat edit the right one for the active provider.
+- `gac models` lists the models your ChatGPT plan can actually use right now — gac reads OpenAI's live catalog for your account, so the list stays correct as OpenAI rotates models. If a saved `codexModel` has been retired you'll get a clear error naming the current models and how to switch.
 - On a remote/SSH machine, forward the OAuth callback port before `gac auth login`: `ssh -L 1455:localhost:1455 <host>`.
 - The Codex backend only streams; with `stream: false` gac simply buffers the stream and prints the finished reply.
 - `maxTokens` is honored (sent as `max_output_tokens`; on reasoning models it includes reasoning tokens, so very small caps can cut answers short). `temperature` is not sent — the Codex backend manages sampling.
@@ -280,7 +281,8 @@ gac config set detailedContext true
 - `codexBaseUrl` (string): Codex backend base (default `https://chatgpt.com/backend-api/codex`)
 - `apiKey` (string): API key for OpenAI-compatible services (empty for local servers; not used by `codex`)
 - `model` (string): model ID from `/v1/models` (used by `openai` and `ollama`)
-- `codexModel` (string): model used when `provider` is `codex` (default `gpt-5.1-codex`)
+- `codexModel` (string): model used when `provider` is `codex` (default `gpt-5.6-sol`; run `gac models` for the current list your plan supports)
+- `codexClientVersion` (`null` or string): Codex CLI version gac reports when fetching the model catalog. `null` (default) claims an always-ahead version so new model generations surface automatically; set a real `"x.y.z"` only if the backend ever needs one
 - `temperature` (number)
 - `maxTokens` (`"auto"` or number): response token cap. `"auto"` (the default) uses the output limit reported by the selected model's definition — re-detected whenever you switch models — and falls back to `2048` when the backend doesn't report one. A positive number pins the cap manually; `0` (or any value ≤ 0) removes it entirely so the model can answer as long as necessary, bounded only by its context window. Either way it is automatically reduced per request when the prompt leaves less room in the context window.
 - `contextWindow` (`"auto"` or number): size of the model's context window in tokens. `"auto"` (default) asks the backend — Ollama via `/api/show`, OpenAI-compatible servers via context metadata in `/v1/models` (LM Studio, OpenRouter, and others expose it); the `codex` provider uses the GPT-5 family's known ~272k window. Set a number to pin it manually; detection failures fall back to a conservative 8192. This drives chat-history trimming, input truncation, and Ollama's `num_ctx` (sized to the conversation, so large-context models don't waste memory on short chats).
