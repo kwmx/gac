@@ -11,8 +11,13 @@ import { getConfigPath } from "./config.js";
 // configured one. Most current local models handle at least 8k tokens.
 export const FALLBACK_CONTEXT_TOKENS = 8192;
 // The Codex backend has no metadata endpoint; the GPT-5 family it serves
-// accepts ~272k input tokens. A numeric `contextWindow` config still wins.
+// accepts ~272k input tokens and emits up to 128k output tokens. Numeric
+// `contextWindow` / `maxTokens` config values still win.
 export const CODEX_CONTEXT_TOKENS = 272000;
+export const CODEX_MAX_OUTPUT_TOKENS = 128000;
+// Response cap applied when maxTokens is "auto" but the backend's model
+// definition does not report an output limit.
+export const DEFAULT_MAX_TOKENS = 2048;
 // Tokens reserved as slack between the estimated prompt size and the real one.
 export const TRIM_MARGIN_TOKENS = 256;
 const RESPONSE_MARGIN_TOKENS = 64;
@@ -63,6 +68,38 @@ export function pickOllamaContextLength(showJson) {
         if (Number.isFinite(numeric) && numeric > 0) return numeric;
       }
     }
+  }
+  return null;
+}
+
+// A modelfile can pin a generation limit via `num_predict`; when present it
+// is the model definition's own response cap.
+export function pickOllamaMaxTokens(showJson) {
+  if (!showJson || typeof showJson !== "object") return null;
+  const params = typeof showJson.parameters === "string" ? showJson.parameters : "";
+  const match = params.match(/(?:^|\n)\s*num_predict\s+"?(-?\d+)"?/);
+  if (match) {
+    const value = Number(match[1]);
+    // -1/-2 mean "unlimited"/"fill context" in Ollama, not a usable cap.
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+// Output-token limits show up in /v1/models under different names too:
+// OpenRouter reports top_provider.max_completion_tokens, other servers use
+// max_output_tokens / max_completion_tokens.
+export function pickOpenAiMaxTokens(modelEntry) {
+  if (!modelEntry || typeof modelEntry !== "object") return null;
+  const candidates = [
+    modelEntry.max_output_tokens,
+    modelEntry.max_completion_tokens,
+    modelEntry.top_provider?.max_completion_tokens,
+    modelEntry.output_token_limit,
+  ];
+  for (const candidate of candidates) {
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
   }
   return null;
 }
@@ -136,21 +173,39 @@ async function fetchWithTimeout(url, options) {
   }
 }
 
-// Ask the backend how large the model's context window is. Best-effort: any
-// failure (endpoint missing, timeout, unexpected shape) resolves to null.
-// Results are cached in-process and on disk (gac is a one-shot CLI, so the
-// disk cache is what actually prevents a probe per invocation).
-export async function detectContextWindow(config) {
+// Cached values are either null (probe failed), a legacy bare number from an
+// older cache file (context window only), or a { contextWindow, maxTokens }
+// object. Always hand callers the object shape.
+function normalizeLimits(value) {
+  if (typeof value === "number") {
+    return { contextWindow: value, maxTokens: null };
+  }
+  if (value && typeof value === "object") {
+    return {
+      contextWindow: Number(value.contextWindow) > 0 ? Number(value.contextWindow) : null,
+      maxTokens: Number(value.maxTokens) > 0 ? Number(value.maxTokens) : null,
+    };
+  }
+  return { contextWindow: null, maxTokens: null };
+}
+
+// Ask the backend what the model definition says about its limits: the
+// context window and, when reported, the model's own output-token cap.
+// Best-effort: any failure (endpoint missing, timeout, unexpected shape)
+// resolves to nulls. Results are cached in-process and on disk (gac is a
+// one-shot CLI, so the disk cache is what actually prevents a probe per
+// invocation).
+export async function detectModelLimits(config) {
   if (config.provider === "codex") {
-    return CODEX_CONTEXT_TOKENS;
+    return { contextWindow: CODEX_CONTEXT_TOKENS, maxTokens: CODEX_MAX_OUTPUT_TOKENS };
   }
   const key = detectionKey(config);
-  if (detectionCache.has(key)) return detectionCache.get(key);
+  if (detectionCache.has(key)) return normalizeLimits(detectionCache.get(key));
 
   const cached = readDiskCacheEntry(key);
   if (cached !== undefined) {
     detectionCache.set(key, cached);
-    return cached;
+    return normalizeLimits(cached);
   }
 
   let detected = null;
@@ -164,7 +219,10 @@ export async function detectContextWindow(config) {
         body: JSON.stringify({ model: config.model, name: config.model }),
       });
       if (response.ok) {
-        detected = pickOllamaContextLength(await response.json());
+        const json = await response.json();
+        const contextWindow = pickOllamaContextLength(json);
+        const maxTokens = pickOllamaMaxTokens(json);
+        if (contextWindow || maxTokens) detected = { contextWindow, maxTokens };
       }
     } else {
       const url = `${normalizeOpenAiBaseUrl(config.baseUrl)}/models`;
@@ -176,16 +234,19 @@ export async function detectContextWindow(config) {
         const json = await response.json();
         const entries = Array.isArray(json?.data) ? json.data : [];
         const entry = entries.find((item) => item && item.id === config.model);
-        detected = pickOpenAiContextLength(entry);
+        const contextWindow = pickOpenAiContextLength(entry);
+        const maxTokens = pickOpenAiMaxTokens(entry);
+        if (contextWindow || maxTokens) detected = { contextWindow, maxTokens };
       }
     }
   } catch (err) {
     detected = null;
   }
 
+  // A wholesale failure stays null so it gets the short failure TTL.
   detectionCache.set(key, detected);
   writeDiskCacheEntry(key, detected);
-  return detected;
+  return normalizeLimits(detected);
 }
 
 // Resolve the context window to plan around: an explicit numeric config value
@@ -200,7 +261,25 @@ export async function resolveContextWindow(config) {
       return Math.floor(numeric);
     }
   }
-  return detectContextWindow(config);
+  return (await detectModelLimits(config)).contextWindow;
+}
+
+// Resolve the response cap. An explicit numeric config wins: a positive value
+// caps the response, 0 or less lifts the cap entirely. "auto" (the default)
+// takes the limit from the selected model's definition — re-detected whenever
+// the model changes, since detection is keyed per model — and falls back to
+// DEFAULT_MAX_TOKENS when the backend does not report one. Anything else
+// (e.g. a typo) degrades to auto-detection, mirroring resolveContextWindow.
+export async function resolveMaxTokens(config) {
+  const configured = config?.maxTokens;
+  if (configured !== "auto" && configured !== undefined && configured !== null) {
+    const numeric = Number(configured);
+    if (Number.isFinite(numeric)) {
+      return Math.floor(numeric);
+    }
+  }
+  const detected = (await detectModelLimits(config)).maxTokens;
+  return Number(detected) > 0 ? Math.floor(Number(detected)) : DEFAULT_MAX_TOKENS;
 }
 
 // Tokens available for the prompt once the response reservation is taken out.
@@ -209,7 +288,7 @@ export async function resolveContextWindow(config) {
 // sane amount of room.
 export function contextBudget(contextWindow, maxTokens) {
   const window = contextWindow || FALLBACK_CONTEXT_TOKENS;
-  const reserve = Number(maxTokens) > 0 ? Number(maxTokens) : 2048;
+  const reserve = Number(maxTokens) > 0 ? Number(maxTokens) : DEFAULT_MAX_TOKENS;
   return Math.max(512, window - reserve - TRIM_MARGIN_TOKENS);
 }
 
@@ -247,7 +326,7 @@ export function resolveGenerationBudget(config, messages, contextWindow) {
   if (config?.maxTokens != null && Number.isFinite(raw) && raw <= 0) {
     return { maxTokens: null, numCtx: contextWindow || null };
   }
-  const configured = raw > 0 ? Math.floor(raw) : 2048;
+  const configured = raw > 0 ? Math.floor(raw) : DEFAULT_MAX_TOKENS;
   if (!contextWindow) {
     return { maxTokens: configured, numCtx: null };
   }

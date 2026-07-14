@@ -90,7 +90,7 @@ const FIELDS = [
   {
     key: "maxTokens",
     label: "Max Tokens",
-    prompt: "Max Tokens (0 or less for no limit)",
+    prompt: 'Max Tokens ("auto" = model\'s own limit, a number pins it, 0 or less = no limit)',
   },
   {
     key: "contextWindow",

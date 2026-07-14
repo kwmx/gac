@@ -8,7 +8,11 @@ import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { buildDirectoryContext } from "./sysinfo.js";
 import { fenceFor, truncateForContext } from "./input.js";
-import { resolveContextWindow, contextBudget } from "./contextwindow.js";
+import {
+  resolveContextWindow,
+  resolveMaxTokens,
+  contextBudget,
+} from "./contextwindow.js";
 import {
   extractJsonPayload,
   extractCommandFix,
@@ -88,6 +92,7 @@ function readLastShellCommand() {
 
 async function requestFix(command, errorOutput, config) {
   const contextWindow = await resolveContextWindow(config);
+  const maxTokens = await resolveMaxTokens(config);
   const system = buildSystemPrompt("fix", config);
   const parts = [
     "This command failed:",
@@ -98,7 +103,7 @@ async function requestFix(command, errorOutput, config) {
   if (errorOutput) {
     const budgetChars = Math.max(
       2000,
-      Math.floor((contextBudget(contextWindow, config.maxTokens) * 4) / 2)
+      Math.floor((contextBudget(contextWindow, maxTokens) * 4) / 2)
     );
     const { text } = truncateForContext(errorOutput, budgetChars);
     const fence = fenceFor(text);

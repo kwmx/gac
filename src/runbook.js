@@ -12,6 +12,7 @@ import { promptKeyAction } from "./tui.js";
 import { attachInputToPrompt, formatFileContexts, truncateForContext } from "./input.js";
 import {
   resolveContextWindow,
+  resolveMaxTokens,
   contextBudget,
   estimateTokens,
 } from "./contextwindow.js";
@@ -453,9 +454,10 @@ async function editCommand(current) {
 async function requestRunbookPlan(prompt, config, opts) {
   const system = buildSystemPrompt("runbook", config);
   const contextWindow = await resolveContextWindow(config);
+  const maxTokens = await resolveMaxTokens(config);
   const budgetChars = Math.max(
     4000,
-    (contextBudget(contextWindow, config.maxTokens) - estimateTokens(system) - 500) * 4
+    (contextBudget(contextWindow, maxTokens) - estimateTokens(system) - 500) * 4
   );
 
   const contextParts = [buildRunbookContext()];

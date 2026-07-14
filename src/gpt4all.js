@@ -1,6 +1,10 @@
 import terminalKit from "terminal-kit";
 import { createMarkdownRenderer } from "./markdown.js";
-import { resolveContextWindow, resolveGenerationBudget } from "./contextwindow.js";
+import {
+  resolveContextWindow,
+  resolveMaxTokens,
+  resolveGenerationBudget,
+} from "./contextwindow.js";
 import { codexChatCompletion, listCodexModels, resolveCodexModel } from "./codex.js";
 
 const { terminal: term } = terminalKit;
@@ -622,7 +626,10 @@ export async function chatCompletion(config, messages, options = {}) {
     options.contextWindow !== undefined
       ? options.contextWindow
       : await resolveContextWindow(config);
-  const budget = resolveGenerationBudget(config, messages, contextWindow);
+  // Turn a "auto" maxTokens into the model definition's limit (explicit
+  // numeric configs pass straight through without probing).
+  const maxTokens = await resolveMaxTokens(config);
+  const budget = resolveGenerationBudget({ ...config, maxTokens }, messages, contextWindow);
   if (provider === "codex") {
     return codexChatCompletion(config, messages, budget);
   }

@@ -205,7 +205,7 @@ gac config set detailedContext true
 - `model` (string): model ID from `/v1/models` (used by `openai` and `ollama`)
 - `codexModel` (string): model used when `provider` is `codex` (default `gpt-5.1-codex`)
 - `temperature` (number)
-- `maxTokens` (number): response token cap (default `2048`). Automatically reduced per request when the prompt leaves less room in the context window. Set to `0` (or any value ≤ 0) to remove the cap entirely so the model can answer as long as necessary, bounded only by its context window.
+- `maxTokens` (`"auto"` or number): response token cap. `"auto"` (the default) uses the output limit reported by the selected model's definition — re-detected whenever you switch models — and falls back to `2048` when the backend doesn't report one. A positive number pins the cap manually; `0` (or any value ≤ 0) removes it entirely so the model can answer as long as necessary, bounded only by its context window. Either way it is automatically reduced per request when the prompt leaves less room in the context window.
 - `contextWindow` (`"auto"` or number): size of the model's context window in tokens. `"auto"` (default) asks the backend — Ollama via `/api/show`, OpenAI-compatible servers via context metadata in `/v1/models` (LM Studio, OpenRouter, and others expose it); the `codex` provider uses the GPT-5 family's known ~272k window. Set a number to pin it manually; detection failures fall back to a conservative 8192. This drives chat-history trimming, input truncation, and Ollama's `num_ctx` (sized to the conversation, so large-context models don't waste memory on short chats).
 - `stream` (boolean)
 - `requestTimeoutMs` (number): request timeout in milliseconds (0 to disable). Useful for larger models or slower servers.

@@ -9,7 +9,11 @@ import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { fenceFor, truncateForContext } from "./input.js";
 import { promptKeyAction } from "./tui.js";
-import { resolveContextWindow, contextBudget } from "./contextwindow.js";
+import {
+  resolveContextWindow,
+  resolveMaxTokens,
+  contextBudget,
+} from "./contextwindow.js";
 
 const { terminal: term } = terminalKit;
 const execFileAsync = promisify(execFile);
@@ -182,11 +186,12 @@ export async function runCommit(config, opts = {}) {
   }
 
   const contextWindow = await resolveContextWindow(config);
+  const maxTokens = await resolveMaxTokens(config);
   // Reserve room for the system prompt, stat block, and response; the diff
   // gets whatever is left (~4 chars per token).
   const maxDiffChars = Math.max(
     4000,
-    (contextBudget(contextWindow, config.maxTokens) - 1000) * 4
+    (contextBudget(contextWindow, maxTokens) - 1000) * 4
   );
   const promptText = buildCommitUserPrompt({ stat, diff, recentLog }, maxDiffChars);
 

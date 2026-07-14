@@ -15,7 +15,11 @@ const DEFAULT_CONFIG = {
   // switching providers back and forth never breaks either setup.
   codexModel: "gpt-5.1-codex",
   temperature: 0.7,
-  maxTokens: 2048,
+  // "auto" takes the response cap from the selected model's definition
+  // (re-detected when the model changes) and falls back to 2048 when the
+  // backend reports none. A positive number pins the cap; 0 or less removes
+  // it so the model can answer as long as necessary.
+  maxTokens: "auto",
   // "auto" probes the backend for the model's context length (Ollama
   // /api/show, or context metadata in /v1/models); a number pins it manually.
   contextWindow: "auto",
