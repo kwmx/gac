@@ -18,11 +18,35 @@ export function maskApiKey(apiKey) {
   return `${apiKey.slice(0, 3)}...${apiKey.slice(-3)}`;
 }
 
-async function promptConfigValue(label, currentValue) {
-  term(`${label} [${formatConfigValue(currentValue)}]: `);
+// Build the terminal-kit inputField options for a field. Secret fields
+// (field.mask) are never pre-filled with the current value and mask keystrokes
+// with an echo character; normal fields keep the current value as an editable
+// default. Kept pure and exported so the no-raw-key-default rule is testable.
+export function buildFieldInputOptions(field, currentValue) {
+  if (field && field.mask) {
+    return { cancelable: true, echoChar: "•" };
+  }
+  return { cancelable: true, default: String(currentValue ?? "") };
+}
+
+// Decide what an API-key edit means. Empty input keeps the existing key;
+// "clear" (case-insensitive) removes it; anything else sets the new key.
+// Returning null (canceled) also keeps the key. Pure and exported for testing.
+export function resolveApiKeyEdit(input, currentValue) {
+  if (input === null || input === undefined) return { action: "keep" };
+  const trimmed = String(input).trim();
+  if (trimmed === "") return { action: "keep" };
+  if (trimmed.toLowerCase() === "clear") return { action: "clear", value: "" };
+  return { action: "set", value: trimmed };
+}
+
+async function promptFieldValue(field, currentValue) {
+  // Secret fields show only their prompt — the current value is never rendered.
+  const suffix = field.mask ? "" : ` [${formatConfigValue(currentValue)}]`;
+  term(`${field.prompt}${suffix}: `);
   return new Promise((resolve) => {
     term.inputField(
-      { cancelable: true, default: String(currentValue ?? "") },
+      buildFieldInputOptions(field, currentValue),
       (error, input) => {
         term("\n");
         if (error || input === undefined || input === null) {
@@ -76,9 +100,9 @@ const FIELDS = [
   {
     key: "apiKey",
     label: "API Key",
-    prompt: "API key",
+    prompt: "New API key",
     mask: true,
-    note: "API Key (leave empty to clear)",
+    note: 'API Key — leave empty to keep the current key, type "clear" to remove it.',
   },
   { key: "model", label: "Model", prompt: "Model" },
   {
@@ -198,7 +222,18 @@ export async function runConfigTui(config) {
     }
 
     if (field.note) term(`${field.note}\n`);
-    const value = await promptConfigValue(field.prompt, updatedConfig[field.key]);
+
+    if (field.mask) {
+      // Secret field: input is masked and never seeded with the current key.
+      const input = await promptFieldValue(field, updatedConfig[field.key]);
+      const edit = resolveApiKeyEdit(input, updatedConfig[field.key]);
+      if (edit.action === "keep") continue;
+      setConfigValue(field.key, edit.value);
+      updatedConfig[field.key] = edit.value;
+      continue;
+    }
+
+    const value = await promptFieldValue(field, updatedConfig[field.key]);
     if (value !== null) {
       setConfigValue(field.key, value);
       updatedConfig[field.key] = value;

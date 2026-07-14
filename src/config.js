@@ -74,11 +74,40 @@ const HOME_CONFIG_DIR = path.join(os.homedir(), ".gac");
 const FALLBACK_CONFIG_DIR = path.join(process.cwd(), ".gac");
 let resolvedConfigDir = null;
 
+// The config file can hold an API key, so it is kept private: 0700 on the
+// directory, 0600 on the file. These are honored on POSIX and silently ignored
+// where unsupported (e.g. Windows).
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
+// Config keys whose values must never be printed in plaintext. Matched against
+// the final dotted segment so nested lookups (e.g. "apiKey") are covered too.
+const SECRET_CONFIG_KEYS = new Set(["apiKey"]);
+const REDACTED_PRESENT = "[configured]";
+const REDACTED_ABSENT = "[not configured]";
+
+// Best-effort chmod: correcting permissions must never crash GAC on a
+// filesystem or platform that does not support it.
+function chmodSafe(target, mode) {
+  try {
+    fs.chmodSync(target, mode);
+  } catch (err) {
+    // Windows / unsupported filesystems: ignore.
+  }
+}
+
+function makeConfigDir(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  // mkdir only applies `mode` on creation (and it is masked by umask), so
+  // tighten an existing/created directory back to 0700 where supported.
+  chmodSafe(dir, DIR_MODE);
+}
+
 function resolveConfigDir() {
   if (resolvedConfigDir) return resolvedConfigDir;
 
   try {
-    fs.mkdirSync(HOME_CONFIG_DIR, { recursive: true });
+    makeConfigDir(HOME_CONFIG_DIR);
     resolvedConfigDir = HOME_CONFIG_DIR;
     return resolvedConfigDir;
   } catch (err) {
@@ -86,13 +115,35 @@ function resolveConfigDir() {
   }
 
   try {
-    fs.mkdirSync(FALLBACK_CONFIG_DIR, { recursive: true });
+    makeConfigDir(FALLBACK_CONFIG_DIR);
     resolvedConfigDir = FALLBACK_CONFIG_DIR;
     return resolvedConfigDir;
   } catch (err) {
     resolvedConfigDir = HOME_CONFIG_DIR;
     return resolvedConfigDir;
   }
+}
+
+// True when a config key holds a secret that must not be printed.
+export function isSecretConfigKey(key) {
+  const parts = String(key).split(".");
+  return SECRET_CONFIG_KEYS.has(parts[parts.length - 1]);
+}
+
+// Reduce a secret to a safe presence indicator. Never returns the value.
+export function redactApiKey(value) {
+  return value ? REDACTED_PRESENT : REDACTED_ABSENT;
+}
+
+// Return a shallow copy of the config with every secret replaced by a safe
+// presence indicator. All non-secret values are preserved untouched. This is
+// the single source of truth for masking; callers must never hand-roll it.
+export function redactConfig(config) {
+  const redacted = { ...config };
+  for (const key of Object.keys(redacted)) {
+    if (isSecretConfigKey(key)) redacted[key] = redactApiKey(redacted[key]);
+  }
+  return redacted;
 }
 
 export function getConfigPath() {
@@ -118,7 +169,30 @@ export function loadConfig() {
 export function saveConfig(config) {
   const normalized = { ...DEFAULT_CONFIG, ...config };
   const configPath = getConfigPath();
-  fs.writeFileSync(configPath, JSON.stringify(normalized, null, 2));
+  const body = JSON.stringify(normalized, null, 2);
+
+  // Write to a sibling temp file (same directory, so rename is atomic) with a
+  // private mode, then move it into place. This avoids ever exposing a
+  // world-readable window and leaves no half-written config behind on crash.
+  const tmpPath = `${configPath}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmpPath, body, { mode: FILE_MODE });
+    chmodSafe(tmpPath, FILE_MODE);
+    fs.renameSync(tmpPath, configPath);
+  } catch (err) {
+    // Rename can fail on some filesystems (e.g. cross-device); fall back to a
+    // direct write so config still persists.
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch (cleanupErr) {
+      // Nothing to clean up.
+    }
+    fs.writeFileSync(configPath, body, { mode: FILE_MODE });
+  }
+
+  // Correct permissions on the final file even when it already existed (an
+  // existing file keeps its old mode through writeFileSync). Best-effort.
+  chmodSafe(configPath, FILE_MODE);
 }
 
 export function coerceValue(value) {

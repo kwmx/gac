@@ -2,7 +2,15 @@ import terminalKit from "terminal-kit";
 import process from "process";
 import { randomUUID } from "crypto";
 import { chatCompletion, listModels, getActiveModel, getActiveModelKey } from "./gpt4all.js";
-import { getConfigPath, loadConfig, setConfigValue, getConfigValue } from "./config.js";
+import {
+  getConfigPath,
+  loadConfig,
+  setConfigValue,
+  getConfigValue,
+  redactConfig,
+  redactApiKey,
+  isSecretConfigKey,
+} from "./config.js";
 import { loginCodex, logoutCodex, codexAuthStatus } from "./codexauth.js";
 import { maskApiKey } from "./configtui.js";
 import { createMarkdownRenderer } from "./markdown.js";
@@ -296,6 +304,11 @@ async function runConfigCommand(args, config, interactive) {
       term(`Key "${key}" is not set.\n`);
       return { outcome: "no_op", props: { subcommand: "get" } };
     }
+    // Secrets never leave the process in plaintext — only presence is reported.
+    if (isSecretConfigKey(key)) {
+      term(`${redactApiKey(value)}\n`);
+      return { outcome: "success", props: { subcommand: "get" } };
+    }
     if (value !== null && typeof value === "object") {
       term(`${JSON.stringify(value, null, 2)}\n`);
     } else {
@@ -304,14 +317,15 @@ async function runConfigCommand(args, config, interactive) {
     return { outcome: "success", props: { subcommand: "get" } };
   }
   if (args[0] === "set" && args[1] && args[2] !== undefined) {
-    const updated = setConfigValue(args[1], args.slice(2).join(" "));
+    setConfigValue(args[1], args.slice(2).join(" "));
+    // Print only a confirmation — never echo the value or dump the whole
+    // config, which would leak an existing apiKey.
     term(`Updated ${args[1]} in ${getConfigPath()}\n`);
-    term(`${JSON.stringify(updated, null, 2)}\n`);
     return { outcome: "success", props: { subcommand: "set" } };
   }
 
   term(`Config file: ${getConfigPath()}\n`);
-  term(`${JSON.stringify(config, null, 2)}\n`);
+  term(`${JSON.stringify(redactConfig(config), null, 2)}\n`);
   return { outcome: "success", props: { subcommand: "view" } };
 }
 

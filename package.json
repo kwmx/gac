@@ -7,6 +7,13 @@
   "bin": {
     "gac": "bin/gac.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "blocked_commands.json",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=18.0.0"
   },
