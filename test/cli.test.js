@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseOsRelease } from "../src/sysinfo.js";
-import { normalizeDefaultAction } from "../src/prompts.js";
+import { normalizeDefaultAction, defaultPromptForFiles } from "../src/prompts.js";
 import { parseArgs } from "../src/flags.js";
 
 test("parseOsRelease parses key=value, strips quotes, skips comments", () => {
@@ -20,6 +20,45 @@ test("normalizeDefaultAction accepts known actions and defaults the rest", () =>
   assert.equal(normalizeDefaultAction("nonsense"), "suggest");
   assert.equal(normalizeDefaultAction(""), "suggest");
   assert.equal(normalizeDefaultAction(undefined), "suggest");
+});
+
+test("defaultPromptForFiles generates a mode-appropriate prompt from files", () => {
+  const one = [{ path: "server/src/index.ts", content: "" }];
+  assert.equal(
+    defaultPromptForFiles("explain", one),
+    "Explain what `server/src/index.ts` does and how it works."
+  );
+  assert.equal(
+    defaultPromptForFiles("suggest", one),
+    "Review `server/src/index.ts` and suggest improvements."
+  );
+  assert.equal(defaultPromptForFiles("ask", one), "What does `server/src/index.ts` do?");
+
+  // Unknown/empty modes normalize to the default action (suggest).
+  assert.equal(
+    defaultPromptForFiles("", one),
+    "Review `server/src/index.ts` and suggest improvements."
+  );
+});
+
+test("defaultPromptForFiles handles multiple files and empty input", () => {
+  const many = [
+    { path: "a.js", content: "" },
+    { path: "b.js", content: "" },
+  ];
+  assert.equal(
+    defaultPromptForFiles("explain", many),
+    "Explain what these files (a.js, b.js) do and how they work."
+  );
+  assert.equal(
+    defaultPromptForFiles("suggest", many),
+    "Review these files (a.js, b.js) and suggest improvements."
+  );
+  assert.equal(defaultPromptForFiles("ask", many), "What do these files (a.js, b.js) do?");
+
+  // No files → empty string so callers fall through to missing-prompt handling.
+  assert.equal(defaultPromptForFiles("explain", []), "");
+  assert.equal(defaultPromptForFiles("explain", undefined), "");
 });
 
 function parse(...args) {

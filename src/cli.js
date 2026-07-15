@@ -16,7 +16,11 @@ import { maskApiKey } from "./configtui.js";
 import { createMarkdownRenderer } from "./markdown.js";
 import { runChat } from "./chat.js";
 import { parseArgs, printHelp, getVersion } from "./flags.js";
-import { buildSystemPrompt, normalizeDefaultAction } from "./prompts.js";
+import {
+  buildSystemPrompt,
+  normalizeDefaultAction,
+  defaultPromptForFiles,
+} from "./prompts.js";
 import { buildDirectoryContext } from "./sysinfo.js";
 import {
   readPipedStdin,
@@ -536,6 +540,18 @@ async function dispatchCommand(command, rest, positional, config, ctx) {
         return { action: "prompt", outcome: r.outcome, props: r.props };
       }
     }
+    // `gac -f foo.js` with no subcommand and no prompt: run the default action
+    // against the attached file(s) using a generated prompt.
+    if (fileContexts.length) {
+      const defaultAction = normalizeDefaultAction(config.defaultAction);
+      const r = await runSinglePrompt(
+        defaultAction,
+        defaultPromptForFiles(defaultAction, fileContexts),
+        config,
+        { files: fileContexts, telemetry }
+      );
+      return { action: "prompt", outcome: r.outcome, props: r.props };
+    }
     printHelp();
     return { action: "help", outcome: "success", props: {} };
   }
@@ -593,10 +609,19 @@ async function dispatchCommand(command, rest, positional, config, ctx) {
   const isPromptMode = PROMPT_MODES.has(command) || command === "-a";
   if (isPromptMode || command === "runbook") {
     const mode = command === "-a" ? "ask" : command;
-    const prompt = rest.join(" ").trim();
+    let prompt = rest.join(" ").trim();
     const piped = !inTty ? await readPipedStdin() : null;
+    // With `-f` and no text prompt, generate a default prompt from the file(s)
+    // so `gac explain -f foo.js` works. Runbook needs an explicit task, not
+    // just context, so it keeps requiring a prompt.
+    if (!prompt && !piped && command !== "runbook" && fileContexts.length) {
+      prompt = defaultPromptForFiles(mode, fileContexts);
+    }
     if (!prompt && !piped) {
-      term(`Error: missing prompt after ${command}.\n`);
+      const hint = fileContexts.length
+        ? ` Provide a prompt, e.g. gac ${command} -f <file> "what does this do?".`
+        : "";
+      term(`Error: missing prompt after ${command}.${hint}\n`);
       process.exitCode = 1;
       return { action: mode === "runbook" ? "runbook" : mode, outcome: "failure", props: {} };
     }

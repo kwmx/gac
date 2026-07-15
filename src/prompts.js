@@ -9,6 +9,31 @@ export function normalizeDefaultAction(action) {
   return "suggest";
 }
 
+// When files are attached with `-f` but no text prompt is given, synthesize a
+// sensible default prompt from the file(s) so the command still runs instead of
+// failing with "missing prompt". Returns "" when there are no files, so callers
+// can fall through to their normal missing-prompt handling.
+export function defaultPromptForFiles(mode, files) {
+  const list = files || [];
+  if (!list.length) return "";
+  const names = list.map((f) => f.path);
+  const many = names.length > 1;
+  const label = many
+    ? `these files (${names.join(", ")})`
+    : `\`${names[0]}\``;
+  const normalized = normalizeDefaultAction(mode);
+  if (normalized === "explain") {
+    return many
+      ? `Explain what ${label} do and how they work.`
+      : `Explain what ${label} does and how it works.`;
+  }
+  if (normalized === "suggest") {
+    return `Review ${label} and suggest improvements.`;
+  }
+  // ask (and any fallback)
+  return many ? `What do ${label} do?` : `What does ${label} do?`;
+}
+
 export function buildSystemPrompt(mode, config) {
   const osGuidance = getOsGuidance();
 
