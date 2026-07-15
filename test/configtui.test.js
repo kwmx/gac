@@ -4,6 +4,8 @@ import {
   buildFieldInputOptions,
   resolveApiKeyEdit,
   maskApiKey,
+  telemetryMenuLabel,
+  telemetryToggleAction,
 } from "../src/configtui.js";
 
 const SENTINEL = "SUPER_SECRET_API_KEY_DO_NOT_PRINT";
@@ -45,4 +47,27 @@ test("resolveApiKeyEdit sets any other non-empty value as the new key", () => {
 test("maskApiKey never returns the full key", () => {
   assert.ok(!maskApiKey(SENTINEL).includes(SENTINEL));
   assert.equal(maskApiKey(""), "(empty)");
+});
+
+test("telemetryMenuLabel reflects state and notes env suppression", () => {
+  assert.equal(
+    telemetryMenuLabel({ effectiveState: "enabled", suppression: { suppressed: false, reasons: [] } }),
+    "Telemetry: enabled"
+  );
+  assert.equal(
+    telemetryMenuLabel({ effectiveState: "disabled", suppression: { suppressed: false, reasons: [] } }),
+    "Telemetry: disabled"
+  );
+  assert.equal(
+    telemetryMenuLabel({ effectiveState: "disabled", suppression: { suppressed: true, reasons: ["CI"] } }),
+    "Telemetry: disabled (suppressed by CI)"
+  );
+  assert.equal(telemetryMenuLabel(null), "Telemetry: (unknown)");
+});
+
+test("telemetryToggleAction disables only when currently enabled", () => {
+  assert.equal(telemetryToggleAction("enabled"), "disable");
+  assert.equal(telemetryToggleAction("disabled"), "enable");
+  assert.equal(telemetryToggleAction("declined"), "enable");
+  assert.equal(telemetryToggleAction("undecided"), "enable");
 });

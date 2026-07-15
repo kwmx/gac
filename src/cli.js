@@ -42,6 +42,7 @@ import { runCompletions } from "./completions.js";
 import { runConfigTui } from "./configtui.js";
 import { createTelemetry } from "./telemetry/index.js";
 import { CONSENT_STATEMENT } from "./telemetry/consent.js";
+import { spawnBackgroundFlush } from "./telemetry/background.js";
 import { runTelemetryCommand } from "./telemetrycli.js";
 import { sizeBucket, countBucket, inputMode } from "./telemetry/buckets.js";
 
@@ -291,14 +292,14 @@ async function runAuthCommand(args, config) {
   return { outcome: "failure", props: { subcommand: "unknown" } };
 }
 
-async function runConfigCommand(args, config, interactive) {
+async function runConfigCommand(args, config, interactive, telemetry) {
   if (args[0] === "tui") {
     if (!interactive) {
       term("The config editor requires an interactive terminal.\n");
       process.exitCode = 1;
       return { outcome: "failure", props: { subcommand: "tui" } };
     }
-    await runConfigTui(config);
+    await runConfigTui(config, { telemetry });
     return { outcome: "success", props: { subcommand: "tui" } };
   }
   if (args[0] === "get" && args[1]) {
@@ -382,9 +383,10 @@ export function resolveCommandAction(command, inTty) {
   return "unknown";
 }
 
-// Emit the single top-level command_completed event and drain the queue within
-// the foreground time budget. Never throws.
-async function emitCommandCompleted(telemetry, action, outcome, props, durationMs) {
+// Emit the single top-level command_completed event, then hand transmission off
+// to a detached background process so the command exits immediately instead of
+// waiting on the network. `backgroundFlush` is injectable for tests. Never throws.
+function emitCommandCompleted(telemetry, action, outcome, props, durationMs, backgroundFlush) {
   telemetry.track({
     event_name: "command_completed",
     action,
@@ -393,7 +395,15 @@ async function emitCommandCompleted(telemetry, action, outcome, props, durationM
     error_category: null,
     properties: props || {},
   });
-  await telemetry.flush({ timeoutMs: 300 });
+  // Only spawn a worker when there is something to send and we are not in a
+  // backoff window — the check is in-memory (no file/network I/O).
+  try {
+    if (typeof telemetry.isDueForFlush === "function" && telemetry.isDueForFlush()) {
+      (backgroundFlush || spawnBackgroundFlush)();
+    }
+  } catch (err) {
+    // Telemetry must never affect the command's exit.
+  }
 }
 
 export async function runCli(argv, cliDeps = {}) {
@@ -411,6 +421,8 @@ export async function runCli(argv, cliDeps = {}) {
   const interactive = inTty && outTty;
   const version = getVersion();
   const invocationId = cliDeps.invocationId || randomUUID();
+  // Detached telemetry flush, injectable so tests never spawn a real process.
+  const backgroundFlush = cliDeps.spawnBackgroundFlush || spawnBackgroundFlush;
 
   const makeTelemetry = (config) =>
     cliDeps.telemetry ||
@@ -431,13 +443,13 @@ export async function runCli(argv, cliDeps = {}) {
   if (flags.version) {
     term(`gac ${version}\n`);
     const telemetry = makeTelemetry(null);
-    await emitCommandCompleted(telemetry, "version", "success", {}, null);
+    await emitCommandCompleted(telemetry, "version", "success", {}, null, backgroundFlush);
     return;
   }
   if (flags.help) {
     printHelp();
     const telemetry = makeTelemetry(null);
-    await emitCommandCompleted(telemetry, "help", "success", {}, null);
+    await emitCommandCompleted(telemetry, "help", "success", {}, null, backgroundFlush);
     return;
   }
 
@@ -502,14 +514,15 @@ export async function runCli(argv, cliDeps = {}) {
       fileContexts,
     });
   } catch (err) {
-    // A thrown command still records a failure (bounded flush), then the error
-    // propagates unchanged so bin/gac.js can report it.
+    // A thrown command still records a failure, hands the send to the background,
+    // then the error propagates unchanged so bin/gac.js can report it.
     await emitCommandCompleted(
       telemetry,
       plannedAction,
       "failure",
       {},
-      Date.now() - commandStart
+      Date.now() - commandStart,
+      backgroundFlush
     );
     throw err;
   }
@@ -518,7 +531,7 @@ export async function runCli(argv, cliDeps = {}) {
   const action = (result && result.action) || plannedAction;
   const outcome = (result && result.outcome) || (process.exitCode ? "failure" : "success");
   const props = (result && result.props) || {};
-  await emitCommandCompleted(telemetry, action, outcome, props, Date.now() - commandStart);
+  await emitCommandCompleted(telemetry, action, outcome, props, Date.now() - commandStart, backgroundFlush);
 }
 
 // Runs the resolved command and returns { action, outcome, props }. Preserves
@@ -557,7 +570,7 @@ async function dispatchCommand(command, rest, positional, config, ctx) {
   }
 
   if (command === "config") {
-    const r = await runConfigCommand(rest, config, interactive);
+    const r = await runConfigCommand(rest, config, interactive, telemetry);
     return { action: "config", outcome: r.outcome, props: r.props };
   }
 
@@ -585,7 +598,10 @@ async function dispatchCommand(command, rest, positional, config, ctx) {
   }
 
   if (command === "commit") {
-    const r = await runCommit(config, { dryRun: flags.dryRun, telemetry });
+    // `--all` is parsed as a flag; `-a` after `commit` lands in rest (since a
+    // bare `-a` is the ask alias), so accept both as "stage tracked changes".
+    const stageAll = flags.all || (rest || []).includes("-a");
+    const r = await runCommit(config, { dryRun: flags.dryRun, all: stageAll, telemetry });
     return { action: "commit", outcome: (r && r.outcome) || "success", props: (r && r.props) || {} };
   }
 

@@ -140,6 +140,9 @@ export function createNoopTelemetry() {
     isEnabled() {
       return false;
     },
+    isDueForFlush() {
+      return false;
+    },
     shouldPrompt() {
       return false;
     },
@@ -354,8 +357,10 @@ export function createTelemetry(options = {}) {
         properties: { consent_version: TELEMETRY_CONSENT_VERSION },
       });
 
-      // Bounded, non-blocking flush; a failure must not undo consent.
-      await flush({ timeoutMs: opts.flushTimeoutMs || 300 });
+      // Enabling is a deliberate one-off, so use a generous timeout: it lets the
+      // consent event land on a cold connection instead of timing out and
+      // arming a spurious backoff. A failure must never undo consent.
+      await flush({ timeoutMs: opts.flushTimeoutMs || 3000 });
       return { enabled: true, persisted };
     } catch (err) {
       return { enabled: false };
@@ -398,7 +403,7 @@ export function createTelemetry(options = {}) {
     } else if (saved === "enabled") {
       effectiveState = "enabled";
     } else {
-      effectiveState = saved; // declined | disabled | undecided | consent-expired
+      effectiveState = saved; // declined | disabled | undecided
     }
     return {
       savedDecision: saved,
@@ -429,6 +434,18 @@ export function createTelemetry(options = {}) {
     return isEffectivelyEnabled(state, env);
   }
 
+  // Cheap, in-memory check (no file/network I/O): is telemetry enabled and past
+  // any active backoff window? Used by the CLI to decide whether spawning a
+  // background flush is worthwhile without touching the queue file.
+  function isDueForFlush() {
+    if (!isEffectivelyEnabled(state, env)) return false;
+    if (state && state.nextAttemptAt) {
+      const next = Date.parse(state.nextAttemptAt);
+      if (Number.isFinite(next) && next > now()) return false;
+    }
+    return true;
+  }
+
   function shouldPrompt(interactive) {
     return shouldAutoPrompt(state, env, { interactive });
   }
@@ -447,6 +464,7 @@ export function createTelemetry(options = {}) {
     getStatus,
     info,
     isEnabled,
+    isDueForFlush,
     shouldPrompt,
     getEffectiveDecision,
     // Exposed for the telemetry CLI / tests; never printed as raw UUID.

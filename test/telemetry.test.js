@@ -160,19 +160,43 @@ test("disabling is idempotent (exits fine when already disabled)", async () => {
   assert.equal(r.disabled, true);
 });
 
-test("expired consent suppresses collection", async () => {
+test("isDueForFlush: false when disabled, true when enabled and out of backoff", async () => {
+  const h = makeHarness();
+  assert.equal(h.tel.isDueForFlush(), false, "disabled by default");
+  await h.tel.enable();
+  assert.equal(h.tel.isDueForFlush(), true, "enabled and not in backoff");
+});
+
+test("isDueForFlush: false while a backoff window is active", async () => {
   const h = makeHarness();
   await h.tel.enable();
-  // Simulate a materially changed contract by bumping the saved consent version
-  // backwards relative to the current one.
+  const state = h.readStateRaw();
+  state.nextAttemptAt = "2099-01-01T00:00:00.000Z"; // far in the future
+  fs.writeFileSync(h.paths.state, JSON.stringify(state));
+  const reopened = createTelemetry({ ...h.options });
+  assert.equal(reopened.isDueForFlush(), false, "in backoff → not due");
+});
+
+test("isDueForFlush: false under env suppression even when enabled", async () => {
+  const h = makeHarness({ env: { CI: "1" } });
+  await h.tel.enable();
+  assert.equal(h.tel.isDueForFlush(), false);
+});
+
+test("consent is sticky across a consent-version change", async () => {
+  const h = makeHarness();
+  await h.tel.enable();
+  // Simulate a new release with a changed consent-contract version by moving the
+  // saved consent version off the current one. The user opted in once, so they
+  // must remain enabled and keep collecting until they explicitly disable.
   const state = h.readStateRaw();
   state.consentVersion = state.consentVersion - 1;
   fs.writeFileSync(h.paths.state, JSON.stringify(state));
   const reopened = createTelemetry({ ...h.options });
-  assert.equal(reopened.isEnabled(), false);
-  assert.equal(reopened.getEffectiveDecision(), "consent-expired");
+  assert.equal(reopened.isEnabled(), true);
+  assert.equal(reopened.getEffectiveDecision(), "enabled");
   reopened.track({ event_name: "command_completed", action: "ask", outcome: "success", properties: {} });
-  assert.equal(fs.existsSync(h.paths.queue), false, "nothing queued under expired consent");
+  assert.equal(fs.existsSync(h.paths.queue), true, "still collecting after a version change");
 });
 
 for (const envVar of ["CI", "DO_NOT_TRACK", "DNT", "GAC_TELEMETRY_DISABLED"]) {

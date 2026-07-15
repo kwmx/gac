@@ -26,6 +26,28 @@ export function countStagedFiles(stat) {
   return lines.length > 0 ? Math.max(0, lines.length - 1) : 0;
 }
 
+// Classify why nothing is staged, from `git status --porcelain` output, so the
+// CLI can print actionable guidance instead of a flat "stage first". Porcelain
+// v1 lines are "XY <path>": column X is the index (staged) state, column Y the
+// worktree (unstaged) state, and "??" marks untracked files. Pure/exported for
+// testing. Returns "unstaged" | "untracked" | "clean".
+export function classifyNoStaged(statusPorcelain) {
+  const entries = String(statusPorcelain || "").split("\n").filter(Boolean);
+  let hasUnstagedTracked = false;
+  let hasUntracked = false;
+  for (const line of entries) {
+    if (line.startsWith("??")) {
+      hasUntracked = true;
+      continue;
+    }
+    const worktreeState = line[1];
+    if (worktreeState && worktreeState !== " ") hasUnstagedTracked = true;
+  }
+  if (hasUnstagedTracked) return "unstaged";
+  if (hasUntracked) return "untracked";
+  return "clean";
+}
+
 // Strip the wrappers small models like to add around the actual message:
 // code fences, "Commit message:" labels, and surrounding quotes.
 export function cleanCommitMessage(raw) {
@@ -176,6 +198,18 @@ export async function runCommit(config, opts = {}) {
     return { outcome: "failure", props: {} };
   }
 
+  // `--all` / `-a`: stage tracked modifications and deletions first, matching
+  // `git commit -a` (untracked files are still left for an explicit `git add`).
+  if (opts.all) {
+    try {
+      await git(["add", "-u"]);
+    } catch (err) {
+      term.red(`Failed to stage tracked changes: ${err.message}\n`);
+      process.exitCode = 1;
+      return { outcome: "failure", props: {} };
+    }
+  }
+
   let diff;
   let stat;
   let recentLog;
@@ -194,7 +228,35 @@ export async function runCommit(config, opts = {}) {
   recentLog = recentLog.trim();
 
   if (!diff.trim()) {
-    term("No staged changes. Stage files with `git add` first.\n");
+    // Nothing is staged. Explain *why* — the usual cause is unstaged edits, not
+    // a clean tree — and surface the worktree git is actually using so a stray
+    // GIT_DIR/GIT_WORK_TREE (which silently redirects git) is easy to spot.
+    let status = "";
+    let topLevel = "";
+    try {
+      [status, topLevel] = await Promise.all([
+        git(["status", "--porcelain"]),
+        git(["rev-parse", "--show-toplevel"]).catch(() => ""),
+      ]);
+    } catch (err) {
+      // Fall back to the generic guidance below.
+    }
+    const kind = classifyNoStaged(status);
+    if (kind === "unstaged") {
+      term(
+        "Nothing staged, but you have unstaged changes to tracked files.\n" +
+          "Stage them with `git add`, or commit all tracked changes with `gac commit --all` (or -a).\n"
+      );
+    } else if (kind === "untracked") {
+      term(
+        "Nothing staged. Only untracked files are present — add them explicitly with `git add <file>` first.\n"
+      );
+    } else {
+      const root = topLevel.trim();
+      term(
+        `Nothing to commit — the working tree is clean${root ? ` (${root})` : ""}.\n`
+      );
+    }
     return { outcome: "no_op", props: {} };
   }
 

@@ -88,6 +88,23 @@ test("parseArgs leaves flag-like tokens inside the prompt untouched", () => {
   assert.ok(doubleDash.positional.includes("--verbose"));
 });
 
+test("parseArgs recognizes --all for commit and leaves -a as the ask alias", () => {
+  const all = parse("commit", "--all");
+  assert.equal(all.flags.all, true);
+  assert.deepEqual(all.positional, ["commit"]);
+
+  // `-a` after commit is not a global flag; it lands in the positional rest so
+  // the commit dispatch can treat it as "stage all".
+  const shortAll = parse("commit", "-a");
+  assert.equal(shortAll.flags.all, false);
+  assert.deepEqual(shortAll.positional, ["commit", "-a"]);
+
+  // A bare `-a` remains the ask-mode command alias, untouched by --all.
+  const ask = parse("-a", "what is this");
+  assert.equal(ask.flags.all, false);
+  assert.equal(ask.positional[0], "-a");
+});
+
 test("parseArgs keeps the legacy --detailed-cont alias working", () => {
   assert.equal(parse("--detailed-cont", "suggest", "install nginx").flags.detailedContext, true);
 });

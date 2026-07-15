@@ -183,7 +183,7 @@ test("runCli emits command_completed for `--version` without prompting", async (
   assert.equal(done[0].action, "version");
 });
 
-test("an unavailable telemetry server cannot affect a real command", async () => {
+test("telemetry transmission is handed to the background and never blocks a command", async () => {
   const os = await import("node:os");
   const { newEnabledState, writeState } = await import("../src/telemetry/state.js");
 
@@ -193,7 +193,9 @@ test("an unavailable telemetry server cannot affect a real command", async () =>
   const io = { fs, dir, statePath: path.join(dir, "telemetry.json"), queuePath: path.join(dir, "telemetry-queue.ndjson") };
   writeState(io, newEnabledState({ installationId: "seed-id", decidedAt: "2026-07-14T00:00:00.000Z" }));
 
-  let fetchCalls = 0;
+  // Inject the background-flush spawn so the test never launches a real process
+  // or touches the network; the foreground command must not perform the flush.
+  let backgroundSpawns = 0;
   const priorExitCode = process.exitCode;
   process.exitCode = 0;
   await withSuppressedStdout(() =>
@@ -201,20 +203,22 @@ test("an unavailable telemetry server cannot affect a real command", async () =>
       fs,
       homeDir: home,
       env: {},
-      telemetryFetch: async () => {
-        fetchCalls += 1;
-        throw new Error("getaddrinfo ENOTFOUND api.getgac.dev");
+      spawnBackgroundFlush: () => {
+        backgroundSpawns += 1;
+        return true;
       },
     })
   );
 
-  // The command completed normally despite the telemetry server being down.
-  assert.equal(process.exitCode, 0, "exit code unaffected by telemetry outage");
+  // The command completed normally, and transmission was deferred to the
+  // background rather than performed inline.
+  assert.equal(process.exitCode, 0, "exit code unaffected by telemetry");
   process.exitCode = priorExitCode;
-  assert.ok(fetchCalls >= 1, "a flush was attempted");
-  // The event is retained in the queue for a later attempt — no data loss, no crash.
+  assert.equal(backgroundSpawns, 1, "exactly one background flush was scheduled");
+  // The event is enqueued for the background worker to send — no inline flush,
+  // so it is still present in the queue when the foreground command returns.
   const queued = fs.readFileSync(io.queuePath, "utf8").split("\n").filter(Boolean);
-  assert.ok(queued.length >= 1, "command_completed retained after the failed flush");
+  assert.ok(queued.length >= 1, "command_completed enqueued for the background flush");
 });
 
 test("runCli never emits command_completed for the telemetry control command", async () => {

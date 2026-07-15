@@ -49,25 +49,36 @@ test("envSuppression reports each active suppression variable", () => {
   assert.equal(envSuppression({ CI: "false" }).suppressed, false);
 });
 
-test("effectiveDecision reflects saved state and consent versioning", () => {
+test("effectiveDecision reflects saved state", () => {
   assert.equal(effectiveDecision(null), "undecided");
   assert.equal(effectiveDecision(enabledState()), "enabled");
   assert.equal(effectiveDecision({ decision: "declined" }), "declined");
   assert.equal(effectiveDecision({ decision: "disabled" }), "disabled");
-  // An old consent version becomes ineffective.
+  // enabled but missing the installation id is treated as undecided.
+  assert.equal(effectiveDecision(enabledState({ installationId: null })), "undecided");
+});
+
+test("consent is sticky: an old consent version stays enabled across releases", () => {
+  // A materially different (older or newer) consent version does NOT disable a
+  // user who already opted in — they stay enabled until they explicitly disable.
   assert.equal(
     effectiveDecision(enabledState({ consentVersion: TELEMETRY_CONSENT_VERSION - 1 })),
-    "consent-expired"
+    "enabled"
+  );
+  assert.equal(effectiveDecision(enabledState({ consentVersion: 0 })), "enabled");
+  assert.equal(
+    effectiveDecision(enabledState({ consentVersion: TELEMETRY_CONSENT_VERSION + 5 })),
+    "enabled"
   );
 });
 
-test("isEffectivelyEnabled requires current consent AND no env override", () => {
+test("isEffectivelyEnabled requires consent AND no env override", () => {
   assert.equal(isEffectivelyEnabled(enabledState(), {}), true);
   assert.equal(isEffectivelyEnabled(enabledState(), { CI: "1" }), false);
   assert.equal(
     isEffectivelyEnabled(enabledState({ consentVersion: 0 }), {}),
-    false,
-    "expired consent is not enabled"
+    true,
+    "consent survives a version change"
   );
   assert.equal(isEffectivelyEnabled({ decision: "declined" }, {}), false);
 });

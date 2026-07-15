@@ -1,7 +1,26 @@
 import terminalKit from "terminal-kit";
 import { setConfigValue } from "./config.js";
+import { CONSENT_STATEMENT } from "./telemetry/consent.js";
 
 const { terminal: term } = terminalKit;
+
+// The menu label for the telemetry toggle, reflecting the current effective
+// state and any environment suppression. Pure and exported for testing.
+export function telemetryMenuLabel(status) {
+  if (!status) return "Telemetry: (unknown)";
+  let label = `Telemetry: ${status.effectiveState}`;
+  if (status.suppression && status.suppression.suppressed) {
+    label += ` (suppressed by ${status.suppression.reasons.join(", ")})`;
+  }
+  return label;
+}
+
+// Selecting the telemetry row toggles it: an enabled installation is disabled,
+// anything else (disabled/declined/undecided) is enabled after showing consent.
+// Pure and exported for testing.
+export function telemetryToggleAction(decision) {
+  return decision === "enabled" ? "disable" : "enable";
+}
 
 export function formatConfigValue(value) {
   if (typeof value === "string") {
@@ -38,6 +57,18 @@ export function resolveApiKeyEdit(input, currentValue) {
   if (trimmed === "") return { action: "keep" };
   if (trimmed.toLowerCase() === "clear") return { action: "clear", value: "" };
   return { action: "set", value: trimmed };
+}
+
+// A yes/No prompt (default No) for use inside the config editor.
+function promptYesNo(question) {
+  return new Promise((resolve) => {
+    term(question);
+    term.inputField({ cancelable: true }, (error, input) => {
+      term("\n");
+      const value = String(input || "").trim().toLowerCase();
+      resolve(value === "y" || value === "yes");
+    });
+  });
 }
 
 async function promptFieldValue(field, currentValue) {
@@ -155,7 +186,9 @@ const FIELDS = [
   },
 ];
 
-export async function runConfigTui(config) {
+export async function runConfigTui(config, deps = {}) {
+  const telemetry = deps.telemetry || null;
+  const hasTelemetry = Boolean(telemetry);
   term("Config editor (Esc to exit)\n\n");
   const updatedConfig = { ...config };
   term.grabInput({ mouse: "button" });
@@ -183,8 +216,39 @@ export async function runConfigTui(config) {
     return `${field.label}: ${value}`;
   };
 
+  // Telemetry sits between the config fields and "Save and exit" when a
+  // telemetry handle is available. Its index shifts everything after it by one.
+  const telemetryIndex = hasTelemetry ? FIELDS.length : -1;
+  const saveIndex = FIELDS.length + (hasTelemetry ? 1 : 0);
+
+  const toggleTelemetry = async () => {
+    const decision = telemetry.getEffectiveDecision();
+    if (telemetryToggleAction(decision) === "disable") {
+      await telemetry.disable();
+      term(
+        "Telemetry disabled. Queued events and the local installation identifier were removed.\n"
+      );
+      return;
+    }
+    term(`\n${CONSENT_STATEMENT}\n\n`);
+    const ok = await promptYesNo("Enable telemetry? [y/N] ");
+    if (!ok) {
+      term("Telemetry not enabled.\n");
+      return;
+    }
+    await telemetry.enable({ action: "manual_command" });
+    term(
+      "Telemetry enabled. Thank you — this helps prioritize features and improve reliability.\n" +
+        "It stays on across updates until you disable it here or with `gac telemetry disable`.\n"
+    );
+  };
+
   const menuLoop = async () => {
-    const menuItems = [...FIELDS.map(fieldLabel), "Save and exit"];
+    const menuItems = [
+      ...FIELDS.map(fieldLabel),
+      ...(hasTelemetry ? [telemetryMenuLabel(telemetry.getStatus())] : []),
+      "Save and exit",
+    ];
     return new Promise((resolve) => {
       term.singleColumnMenu(menuItems, { cancelable: true }, (error, response) => {
         term("\n");
@@ -205,10 +269,15 @@ export async function runConfigTui(config) {
       break;
     }
 
-    if (selection === FIELDS.length) {
+    if (selection === saveIndex) {
       cleanup();
       term("Configuration saved.\n");
       break;
+    }
+
+    if (hasTelemetry && selection === telemetryIndex) {
+      await toggleTelemetry();
+      continue;
     }
 
     const field = FIELDS[selection];

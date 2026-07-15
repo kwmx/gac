@@ -11,8 +11,9 @@
 // ── Versions and endpoints ─────────────────────────────────────────────────
 
 export const SCHEMA_VERSION = 1;
-// Bump when the notice text or the collected field set changes materially.
-// Older saved consent then becomes ineffective (consent-expired).
+// Records which telemetry contract a user consented to. Consent is sticky, so
+// bumping this does NOT disable telemetry for already-consented users — it only
+// updates the version stamped on future consents and shown in status.
 export const TELEMETRY_CONSENT_VERSION = 1;
 export const TELEMETRY_NOTICE_VERSION = 1;
 

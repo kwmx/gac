@@ -26,6 +26,8 @@ const BOOLEAN_FLAGS = {
   // Legacy alias kept so pre-1.4 scripts don't hard-error.
   "--detailed-cont": "detailedContext",
   "--dry-run": "dryRun",
+  // commit: stage all tracked changes before committing (like `git commit -a`).
+  "--all": "all",
   "-h": "help",
   "--help": "help",
   "-V": "version",
@@ -65,6 +67,7 @@ export function parseArgs(argv) {
     detailedSuggest: false,
     detailedContext: false,
     dryRun: false,
+    all: false,
     help: false,
     version: false,
     exportPath: null,
@@ -154,6 +157,7 @@ export function printHelp() {
   term(`  -d, --detailed-suggest  More detailed, step-by-step suggestions\n`);
   term(`  --detailed-context      Include current directory listing as context\n`);
   term(`  --dry-run               Runbook/commit: show the plan, run nothing\n`);
+  term(`  --all, -a               Commit: stage all tracked changes first (git add -u)\n`);
   term(`  --export <path>         Runbook: write commands to a script instead of running\n`);
   term(`  --no-render             Disable markdown rendering\n`);
   term(`  --debug-render          Show both rendered and raw output\n`);
@@ -171,6 +175,7 @@ export function printHelp() {
   term(`  gac runbook --dry-run "Set up a new Node.js project with eslint"\n`);
   term(`  gac runbook --export setup.sh "Install docker"\n`);
   term(`  gac commit\n`);
+  term(`  gac commit --all   # stage tracked changes, then generate the message\n`);
   term(`\n`);
   term(`Telemetry is OFF by default and opt-in. See: gac telemetry info\n`);
   term(`\n`);

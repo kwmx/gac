@@ -1,12 +1,7 @@
 // Consent statement, environment-override detection, and effective-decision
 // computation. Pure functions only.
 
-import {
-  TELEMETRY_CONSENT_VERSION,
-  TELEMETRY_DOCS_URL,
-  PRIVACY_URL,
-  ATTRIBUTION,
-} from "./contract.js";
+import { TELEMETRY_DOCS_URL, PRIVACY_URL, ATTRIBUTION } from "./contract.js";
 
 // The exact user-facing consent statement. Only minor terminal formatting may
 // vary; the wording is fixed.
@@ -67,13 +62,18 @@ export function envSuppression(env = {}) {
   return { suppressed: reasons.length > 0, reasons };
 }
 
-// Saved decision, honoring consent versioning. One of:
-// "undecided" | "enabled" | "declined" | "disabled" | "consent-expired".
+// Saved decision. One of:
+// "undecided" | "enabled" | "declined" | "disabled".
+//
+// Consent is sticky: once a user enables telemetry it stays enabled across GAC
+// releases (and across consent-contract-version bumps) until they explicitly
+// disable it via `gac telemetry disable` or the config editor. A new version
+// never silently turns telemetry off. The saved `consentVersion` is retained
+// only as a record of which contract the user agreed to (surfaced in status).
 export function effectiveDecision(state) {
   if (!state || typeof state !== "object") return "undecided";
   if (state.decision === "enabled") {
     if (state.enabled !== true) return "undecided";
-    if (state.consentVersion !== TELEMETRY_CONSENT_VERSION) return "consent-expired";
     if (!state.installationId) return "undecided";
     return "enabled";
   }
