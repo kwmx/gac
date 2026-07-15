@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanCommitMessage, classifyNoStaged } from "../src/commit.js";
+import { cleanCommitMessage, classifyNoStaged, appendGuidance } from "../src/commit.js";
 
 test("cleanCommitMessage strips code fences", () => {
   assert.equal(cleanCommitMessage("```\nfeat: add thing\n```"), "feat: add thing");
@@ -49,4 +49,21 @@ test("classifyNoStaged reports clean for empty status", () => {
 
 test("classifyNoStaged prefers unstaged over untracked when both exist", () => {
   assert.equal(classifyNoStaged(" M tracked.js\n?? new.txt"), "unstaged");
+});
+
+test("appendGuidance returns the prompt unchanged when guidance is empty", () => {
+  const prompt = "Staged diff:\n```\n+x\n```";
+  assert.equal(appendGuidance(prompt, ""), prompt);
+  assert.equal(appendGuidance(prompt, "   "), prompt);
+  assert.equal(appendGuidance(prompt, null), prompt);
+  assert.equal(appendGuidance(prompt, undefined), prompt);
+});
+
+test("appendGuidance appends a trimmed instruction after the prompt", () => {
+  const prompt = "Staged diff:\n```\n+x\n```";
+  const out = appendGuidance(prompt, "  elaborate on new features  ");
+  assert.ok(out.startsWith(prompt), "original prompt is preserved at the start");
+  assert.ok(out.includes("elaborate on new features"), "instruction is included");
+  assert.ok(!out.includes("  elaborate"), "instruction is trimmed");
+  assert.ok(/formatting rules/i.test(out), "reminds the model to keep the format");
 });

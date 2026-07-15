@@ -1589,6 +1589,7 @@
         "print",
         "edit",
         "regenerate",
+        "guide",
         "commit",
         "cancel"
       ],
@@ -1675,6 +1676,7 @@
               "print",
               "edit",
               "regenerate",
+              "guide",
               "commit",
               "cancel"
             ]
@@ -1745,6 +1747,9 @@
                 ]
               },
               "had_recent_history": {
+                "type": "boolean"
+              },
+              "guided": {
                 "type": "boolean"
               }
             }

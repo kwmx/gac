@@ -105,6 +105,22 @@ test("parseArgs recognizes --all for commit and leaves -a as the ask alias", () 
   assert.equal(ask.positional[0], "-a");
 });
 
+test("parseArgs captures --guide value for commit steering", () => {
+  const spaced = parse("commit", "--guide", "elaborate on new features");
+  assert.equal(spaced.flags.guide, "elaborate on new features");
+  assert.deepEqual(spaced.positional, ["commit"]);
+
+  const equals = parse("commit", "--guide=focus on why");
+  assert.equal(equals.flags.guide, "focus on why");
+
+  // Missing value is reported as an error.
+  const missing = parse("commit", "--guide");
+  assert.match(missing.errors[0], /requires a value/);
+
+  // Defaults to null when absent.
+  assert.equal(parse("commit").flags.guide, null);
+});
+
 test("parseArgs keeps the legacy --detailed-cont alias working", () => {
   assert.equal(parse("--detailed-cont", "suggest", "install nginx").flags.detailedContext, true);
 });

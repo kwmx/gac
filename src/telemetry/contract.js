@@ -277,12 +277,15 @@ export const EVENTS = {
 
   commit_action_completed: {
     description: "Commit funnel. No diff, message, branch, or repository identity.",
-    actions: ["generate", "print", "edit", "regenerate", "commit", "cancel"],
+    actions: ["generate", "print", "edit", "regenerate", "guide", "commit", "cancel"],
     properties: {
       dry_run: bool(),
       staged_file_count_bucket: enumOf(COUNT_BUCKETS),
       diff_size_bucket: enumOf(SIZE_BUCKETS),
       had_recent_history: bool(),
+      // Whether generation was steered by a guidance instruction (never the
+      // instruction text itself). Set for `--guide` and interactive [g] guide.
+      guided: bool(),
     },
   },
 

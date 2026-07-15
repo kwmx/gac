@@ -91,10 +91,27 @@ function buildCommitUserPrompt({ stat, diff, recentLog }, maxDiffChars) {
   return parts.join("\n\n");
 }
 
-async function generateCommitMessage(config, promptText, contextWindow, telemetry, action = "commit_generate") {
+// Fold a user's steering instruction into the commit prompt. The instruction
+// nudges the model's approach ("elaborate on new features", "focus on why") but
+// never overrides the hard formatting rules in the commit system prompt. Pure
+// and exported for testing; returns promptText unchanged when guidance is empty.
+export function appendGuidance(promptText, guidance) {
+  const trimmed = String(guidance || "").trim();
+  if (!trimmed) return promptText;
+  return `${promptText}\n\nAdditional instruction — follow this when writing the message, without breaking the formatting rules:\n${trimmed}`;
+}
+
+async function generateCommitMessage(
+  config,
+  promptText,
+  contextWindow,
+  telemetry,
+  action = "commit_generate",
+  guidance = ""
+) {
   const messages = [
     { role: "system", content: buildSystemPrompt("commit", config) },
-    { role: "user", content: promptText },
+    { role: "user", content: appendGuidance(promptText, guidance) },
   ];
   const commitConfig = {
     ...config,
@@ -121,16 +138,37 @@ function printMessageBlock(message) {
 }
 
 function promptCommitAction() {
-  return promptKeyAction("[Enter] commit  [e] edit  [r] regenerate  [q] quit: ", {
-    ENTER: "commit",
-    e: "edit",
-    E: "edit",
-    r: "regenerate",
-    R: "regenerate",
-    q: "quit",
-    Q: "quit",
-    ESCAPE: "quit",
-    CTRL_C: "quit",
+  return promptKeyAction(
+    "[Enter] commit  [e] edit  [r] regenerate  [g] guide  [q] quit: ",
+    {
+      ENTER: "commit",
+      e: "edit",
+      E: "edit",
+      r: "regenerate",
+      R: "regenerate",
+      g: "guide",
+      G: "guide",
+      q: "quit",
+      Q: "quit",
+      ESCAPE: "quit",
+      CTRL_C: "quit",
+    }
+  );
+}
+
+// Read a one-line steering instruction from the user. Returns the trimmed text,
+// or "" if they entered nothing or canceled (Esc).
+function promptGuidanceInput() {
+  term.dim('Guidance (e.g. "elaborate on new features") — Enter to skip: ');
+  return new Promise((resolve) => {
+    term.inputField({ cancelable: true }, (error, input) => {
+      term("\n");
+      if (error || input === undefined || input === null) {
+        resolve("");
+        return;
+      }
+      resolve(String(input).trim());
+    });
   });
 }
 
@@ -267,6 +305,7 @@ export async function runCommit(config, opts = {}) {
     staged_file_count_bucket: countBucket(countStagedFiles(stat)),
     diff_size_bucket: sizeBucket(diff.length),
     had_recent_history: Boolean(recentLog),
+    guided: Boolean(opts.guide && String(opts.guide).trim()),
   };
   const trackCommit = (action, outcome, errorCategory = null) => {
     if (!telemetry) return;
@@ -289,6 +328,9 @@ export async function runCommit(config, opts = {}) {
     (contextBudget(contextWindow, maxTokens) - 1000) * 4
   );
   const promptText = buildCommitUserPrompt({ stat, diff, recentLog }, maxDiffChars);
+  // Guidance is "sticky": a `--guide` value seeds it, and interactive [g] guide
+  // updates it, so later regenerations keep honoring the latest instruction.
+  let guidance = String(opts.guide || "").trim();
 
   // Progress goes to stderr when stdout is piped so `gac commit > msg.txt`
   // captures only the message itself.
@@ -297,7 +339,14 @@ export async function runCommit(config, opts = {}) {
   } else {
     process.stderr.write("Generating commit message...\n");
   }
-  let message = await generateCommitMessage(config, promptText, contextWindow, telemetry);
+  let message = await generateCommitMessage(
+    config,
+    promptText,
+    contextWindow,
+    telemetry,
+    "commit_generate",
+    guidance
+  );
   if (!message) {
     term("The model returned an empty commit message. Try again.\n");
     process.exitCode = 1;
@@ -331,14 +380,42 @@ export async function runCommit(config, opts = {}) {
       trackCommit("edit", "success");
       continue;
     }
+    if (action === "guide") {
+      // Ask for a fresh steering instruction, then regenerate with it. An empty
+      // answer means "never mind" — keep the current message and guidance.
+      const input = await promptGuidanceInput();
+      if (!input) {
+        term.dim("No guidance entered; keeping the current message.\n");
+        continue;
+      }
+      guidance = input;
+      term.dim("Regenerating with your guidance...\n");
+      const guided = await generateCommitMessage(
+        config,
+        promptText,
+        contextWindow,
+        telemetry,
+        "commit_regenerate",
+        guidance
+      );
+      if (guided) {
+        message = guided;
+        trackCommit("guide", "success");
+      } else {
+        term.dim("Regeneration returned nothing; keeping the current message.\n");
+        trackCommit("guide", "no_op");
+      }
+      continue;
+    }
     if (action === "regenerate") {
-      term.dim("Regenerating...\n");
+      term.dim(guidance ? "Regenerating (guidance kept)...\n" : "Regenerating...\n");
       const regenerated = await generateCommitMessage(
         config,
         promptText,
         contextWindow,
         telemetry,
-        "commit_regenerate"
+        "commit_regenerate",
+        guidance
       );
       if (regenerated) {
         message = regenerated;

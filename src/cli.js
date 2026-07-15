@@ -601,7 +601,12 @@ async function dispatchCommand(command, rest, positional, config, ctx) {
     // `--all` is parsed as a flag; `-a` after `commit` lands in rest (since a
     // bare `-a` is the ask alias), so accept both as "stage tracked changes".
     const stageAll = flags.all || (rest || []).includes("-a");
-    const r = await runCommit(config, { dryRun: flags.dryRun, all: stageAll, telemetry });
+    const r = await runCommit(config, {
+      dryRun: flags.dryRun,
+      all: stageAll,
+      guide: flags.guide,
+      telemetry,
+    });
     return { action: "commit", outcome: (r && r.outcome) || "success", props: (r && r.props) || {} };
   }
 

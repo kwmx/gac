@@ -54,6 +54,8 @@ const VALUED_FLAGS = {
   "--export": "exportPath",
   "-f": "files",
   "--file": "files",
+  // commit: steer the generated message ("elaborate on new features", etc.).
+  "--guide": "guide",
 };
 
 // Flags that collect every occurrence into an array instead of keeping the last value.
@@ -71,6 +73,7 @@ export function parseArgs(argv) {
     help: false,
     version: false,
     exportPath: null,
+    guide: null,
     files: [],
   };
   const positional = [];
@@ -158,6 +161,7 @@ export function printHelp() {
   term(`  --detailed-context      Include current directory listing as context\n`);
   term(`  --dry-run               Runbook/commit: show the plan, run nothing\n`);
   term(`  --all, -a               Commit: stage all tracked changes first (git add -u)\n`);
+  term(`  --guide <text>          Commit: steer the message (e.g. "elaborate on new features")\n`);
   term(`  --export <path>         Runbook: write commands to a script instead of running\n`);
   term(`  --no-render             Disable markdown rendering\n`);
   term(`  --debug-render          Show both rendered and raw output\n`);
@@ -176,6 +180,7 @@ export function printHelp() {
   term(`  gac runbook --export setup.sh "Install docker"\n`);
   term(`  gac commit\n`);
   term(`  gac commit --all   # stage tracked changes, then generate the message\n`);
+  term(`  gac commit --guide "focus on why, not what"\n`);
   term(`\n`);
   term(`Telemetry is OFF by default and opt-in. See: gac telemetry info\n`);
   term(`\n`);
