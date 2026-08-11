@@ -40,6 +40,8 @@ import { runCommit } from "./commit.js";
 import { runFix } from "./fix.js";
 import { runCompletions } from "./completions.js";
 import { runConfigTui } from "./configtui.js";
+import { promptInput, promptMenu } from "./tui.js";
+import { isInterrupted } from "./interrupt.js";
 import { createTelemetry } from "./telemetry/index.js";
 import { CONSENT_STATEMENT } from "./telemetry/consent.js";
 import { spawnBackgroundFlush } from "./telemetry/background.js";
@@ -178,45 +180,26 @@ async function runModels(config, interactive) {
   const modelKey = getActiveModelKey(config);
   const activeModel = getActiveModel(config);
   const currentIndex = Math.max(menuModels.indexOf(activeModel), 0);
-  term.grabInput({ mouse: "button" });
-  const cleanup = () => {
-    term.grabInput(false);
-    term.removeListener("key", onKey);
-  };
-  const onKey = (name) => {
-    if (name === "CTRL_C") {
-      cleanup();
-      term("\nCanceled.\n");
-      term.processExit(0);
-    }
-  };
-  term.on("key", onKey);
 
-  await new Promise((resolve) => {
-    term.singleColumnMenu(
-      menuModels,
-      { cancelable: true, selectedIndex: currentIndex },
-      (error, response) => {
-        term("\n");
-        cleanup();
-        if (error || !response || response.canceled) {
-          term("Selection canceled.\n");
-          resolve();
-          return;
-        }
-        const selected = menuModels[response.selectedIndex];
-        if (selected === "Keep current default") {
-          term(`Default model unchanged ("${activeModel}").\n`);
-          resolve();
-          return;
-        }
-        setConfigValue(modelKey, selected);
-        config[modelKey] = selected;
-        term(`Default model set to "${selected}".\n`);
-        resolve();
-      }
-    );
+  // Ctrl+C is handled globally (see src/interrupt.js) — it tears the whole
+  // process down rather than just this menu.
+  const selectedIndex = await promptMenu(menuModels, {
+    cancelable: true,
+    selectedIndex: currentIndex,
   });
+  term("\n");
+  if (selectedIndex === null) {
+    term("Selection canceled.\n");
+    return { outcome: "success", props: {} };
+  }
+  const selected = menuModels[selectedIndex];
+  if (selected === "Keep current default") {
+    term(`Default model unchanged ("${activeModel}").\n`);
+    return { outcome: "success", props: {} };
+  }
+  setConfigValue(modelKey, selected);
+  config[modelKey] = selected;
+  term(`Default model set to "${selected}".\n`);
   return { outcome: "success", props: {} };
 }
 
@@ -335,15 +318,12 @@ async function runConfigCommand(args, config, interactive, telemetry) {
 }
 
 // A yes/No prompt (default No). Only used interactively.
-function readYesNo(question) {
-  return new Promise((resolve) => {
-    term(question);
-    term.inputField({ cancelable: true }, (error, input) => {
-      term("\n");
-      const value = String(input || "").trim().toLowerCase();
-      resolve(value === "y" || value === "yes");
-    });
-  });
+async function readYesNo(question) {
+  term(question);
+  const input = await promptInput({ cancelable: true });
+  term("\n");
+  const value = String(input || "").trim().toLowerCase();
+  return value === "y" || value === "yes";
 }
 
 // The one-time automatic consent notice, shown before the first interactive
@@ -387,6 +367,10 @@ export function resolveCommandAction(command, inTty) {
 // to a detached background process so the command exits immediately instead of
 // waiting on the network. `backgroundFlush` is injectable for tests. Never throws.
 function emitCommandCompleted(telemetry, action, outcome, props, durationMs, backgroundFlush) {
+  // An interrupted run records nothing and spawns nothing: Ctrl+C means stop,
+  // and a detached flush worker started during teardown is exactly the kind of
+  // "one more process" the interrupt is supposed to prevent.
+  if (isInterrupted()) return;
   telemetry.track({
     event_name: "command_completed",
     action,

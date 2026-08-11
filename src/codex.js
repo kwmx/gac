@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import terminalKit from "terminal-kit";
 import { createMarkdownRenderer } from "./markdown.js";
 import { getCodexCredentials } from "./codexauth.js";
+import { registerAbort, interruptSignal, isInterrupted } from "./interrupt.js";
 
 const { terminal: term } = terminalKit;
 
@@ -76,7 +77,8 @@ export async function fetchCodexModels(config) {
     Number.isFinite(configTimeout) && configTimeout > 0
       ? Math.min(configTimeout, 30000)
       : 30000;
-  const timeout = createTimeoutController(timeoutMs);
+  abortIfInterrupted();
+  const request = createRequestController(timeoutMs);
   let response;
   try {
     response = await fetch(url, {
@@ -87,15 +89,16 @@ export async function fetchCodexModels(config) {
         "chatgpt-account-id": accountId,
         originator: "codex_cli_rs",
       },
-      signal: timeout ? timeout.controller.signal : undefined,
+      signal: request.controller.signal,
     });
   } catch (err) {
     if (err.name === "AbortError") {
+      abortIfInterrupted();
       throw new Error(`Codex model list request timed out after ${timeoutMs}ms.`);
     }
     throw new Error(`Failed to reach ${url}. (${err.message})`);
   } finally {
-    if (timeout) clearTimeout(timeout.timeoutId);
+    request.release();
   }
   if (!response.ok) {
     throw await codexHttpError(response, await response.text());
@@ -204,17 +207,46 @@ function notify(message) {
   }
 }
 
-function createTimeoutController(timeoutMs) {
-  if (!timeoutMs || Number.isNaN(timeoutMs) || timeoutMs <= 0) {
-    return null;
-  }
+// A request always gets an AbortController, even with no timeout configured,
+// so Ctrl+C can cancel it rather than leaving the process on a dead socket.
+// Callers must call release() in a finally.
+function createRequestController(timeoutMs) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  return { controller, timeoutId };
+  const hasTimeout = Boolean(timeoutMs) && !Number.isNaN(timeoutMs) && timeoutMs > 0;
+  const timeoutId = hasTimeout ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const unregister = registerAbort(controller);
+  return {
+    controller,
+    release() {
+      if (timeoutId) clearTimeout(timeoutId);
+      unregister();
+    },
+  };
 }
 
+// An interrupt during a retry backoff resolves the sleep immediately, so the
+// caller reaches its isInterrupted() check instead of sitting out the delay.
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    const signal = interruptSignal();
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    if (signal.aborted) {
+      done();
+      return;
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+// Retry loops call this so a Ctrl+C between attempts stops the command instead
+// of starting another request.
+function abortIfInterrupted() {
+  if (isInterrupted()) throw new Error("Interrupted.");
 }
 
 // The Codex backend only answers streamed Responses requests, so the SSE
@@ -332,6 +364,9 @@ async function parseCodexStream(response, config, { display }) {
   };
 
   while (!finished) {
+    // Stop rendering the moment Ctrl+C lands, so the interrupt handler is not
+    // racing a stream that keeps writing to the terminal it is restoring.
+    if (isInterrupted()) break;
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -407,23 +442,25 @@ function buildCodexPayload(model, instructions, input, budget) {
 }
 
 async function fetchCodex(url, payload, headers, timeoutMs) {
-  const timeout = createTimeoutController(timeoutMs);
+  abortIfInterrupted();
+  const request = createRequestController(timeoutMs);
   try {
     return await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
-      signal: timeout ? timeout.controller.signal : undefined,
+      signal: request.controller.signal,
     });
   } catch (err) {
     if (err.name === "AbortError") {
+      abortIfInterrupted();
       throw new Error(
         `Codex request timed out after ${timeoutMs}ms. Increase requestTimeoutMs in config if needed.`
       );
     }
     throw new Error(`Failed to connect to ${url}. (${err.message})`);
   } finally {
-    if (timeout) clearTimeout(timeout.timeoutId);
+    request.release();
   }
 }
 
@@ -485,6 +522,7 @@ export async function codexChatCompletion(config, messages, budget) {
   let lastErrorText = "";
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    abortIfInterrupted();
     response = await fetchCodex(url, payload, headers, timeoutMs);
     if (response.ok) break;
 

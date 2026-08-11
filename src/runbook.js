@@ -8,7 +8,8 @@ import { fileURLToPath } from "url";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { buildRunbookContext } from "./sysinfo.js";
-import { promptKeyAction } from "./tui.js";
+import { promptKeyAction, promptInput } from "./tui.js";
+import { registerChild, isInterrupted } from "./interrupt.js";
 import { attachInputToPrompt, formatFileContexts, truncateForContext } from "./input.js";
 import {
   resolveContextWindow,
@@ -201,13 +202,19 @@ export function buildShellSpec(platform = os.platform()) {
 }
 
 function createRunbookShell(spec) {
-  const child = spawn(spec.command, spec.args, { stdio: "pipe" });
+  // Detached puts the shell in its own process group, so an interrupt can
+  // signal the group and take whatever the shell is currently running down
+  // with it. stdio is piped, so the child never needs the controlling
+  // terminal it gives up by detaching.
+  const detached = process.platform !== "win32";
+  const child = spawn(spec.command, spec.args, { stdio: "pipe", detached });
   const session = {
     child,
     spec,
     pending: null,
     closed: false,
   };
+  session.unregister = registerChild(child, { group: detached });
 
   const finalizePending = (result) => {
     if (!session.pending) return;
@@ -294,11 +301,16 @@ function createRunbookShell(spec) {
 }
 
 function closeRunbookShell(session) {
-  if (!session || session.closed) return;
+  if (!session) return;
+  if (typeof session.unregister === "function") session.unregister();
+  if (session.closed) return;
   session.child.stdin.end("exit\n");
 }
 
 function runShellCommand(session, command) {
+  if (isInterrupted()) {
+    return Promise.resolve({ code: 130, stdout: "", stderr: "Interrupted.\n" });
+  }
   if (!session || session.closed) {
     return Promise.resolve({
       code: 1,
@@ -367,12 +379,14 @@ function printRemainingCommands(commands, startIndex) {
 async function confirmRunbookStart() {
   const action = await promptKeyAction(
     "Press Enter to start running the runbook (q to cancel): ",
-    { ENTER: "start", q: "cancel", Q: "cancel", ESCAPE: "cancel", CTRL_C: "cancel" }
+    { ENTER: "start", q: "cancel", Q: "cancel", ESCAPE: "cancel" }
   );
   return action === "start";
 }
 
-const QUIT_KEYS = { q: "quit", Q: "quit", ESCAPE: "quit", CTRL_C: "quit" };
+// Ctrl+C is deliberately absent: it is handled globally (src/interrupt.js) and
+// aborts the whole run rather than resolving this prompt.
+const QUIT_KEYS = { q: "quit", Q: "quit", ESCAPE: "quit" };
 
 // Per-step action prompt. Enter is disabled while the command matches a
 // blocked pattern: it must be edited or skipped first.
@@ -450,16 +464,10 @@ async function requestCommandFix(entry, result, config, telemetry) {
 
 async function editCommand(current) {
   term("Edit command:\n> ");
-  return new Promise((resolve) => {
-    term.inputField({ cancelable: true, default: String(current) }, (error, input) => {
-      term("\n");
-      if (error || input === undefined || input === null || !input.trim()) {
-        resolve(current);
-        return;
-      }
-      resolve(input.trim());
-    });
-  });
+  const input = await promptInput({ cancelable: true, default: String(current) });
+  term("\n");
+  if (input === undefined || input === null || !input.trim()) return current;
+  return input.trim();
 }
 
 async function requestRunbookPlan(prompt, config, opts) {
@@ -651,6 +659,12 @@ export async function runRunbook(prompt, config, opts = {}) {
 
   const runner = createCommandRunner();
   for (let i = 0; i < commands.length; i += 1) {
+    // Ctrl+C is already tearing the process down; never start another step.
+    if (isInterrupted()) {
+      runner.close();
+      trackRunbook("cancelled");
+      return { outcome: "cancelled", props: {} };
+    }
     const entry = commands[i];
     const stepNumber = i + 1;
 

@@ -5,7 +5,13 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { chatCompletion, listModels, getActiveModel, getActiveModelKey } from "./gpt4all.js";
 import { createMarkdownRenderer } from "./markdown.js";
-import { copyToClipboard, extractLastCodeBlock } from "./tui.js";
+import {
+  copyToClipboard,
+  extractLastCodeBlock,
+  promptInput,
+  promptMenu,
+  releaseTerminalInput,
+} from "./tui.js";
 import {
   resolveContextWindow,
   resolveMaxTokens,
@@ -235,48 +241,26 @@ function exportChat(session) {
 // TUI primitives
 // ─────────────────────────────────────────────────────────────────
 
-function inputLine(label, defaultVal) {
-  return new Promise((resolve) => {
-    term(label);
-    const opts = { cancelable: true };
-    if (defaultVal !== undefined) opts.default = String(defaultVal);
-    term.inputField(opts, (error, val) => {
-      term("\n");
-      resolve(error || val === undefined || val === null ? "" : val.trim());
-    });
-  });
+async function inputLine(label, defaultVal) {
+  term(label);
+  const opts = { cancelable: true };
+  if (defaultVal !== undefined) opts.default = String(defaultVal);
+  const val = await promptInput(opts);
+  term("\n");
+  return val === undefined || val === null ? "" : val.trim();
 }
 
-function menuSelect(items, opts = {}) {
-  return new Promise((resolve) => {
-    term.grabInput({ mouse: "button" });
-    const cleanup = () => {
-      term.grabInput(false);
-      term.removeListener("key", onKey);
-    };
-    const onKey = (name) => {
-      if (name === "CTRL_C") {
-        cleanup();
-        term("\n");
-        term.processExit(0);
-      }
-    };
-    term.on("key", onKey);
-    term.singleColumnMenu(
-      items,
-      {
-        cancelable: true,
-        style: term.white,
-        selectedStyle: term.bold.brightCyan,
-        ...opts,
-      },
-      (error, response) => {
-        term("\n");
-        cleanup();
-        resolve(error || !response || response.canceled ? null : response.selectedIndex);
-      }
-    );
+// Ctrl+C is handled globally (see src/interrupt.js) and exits the whole
+// process, so the menu only has to worry about a normal cancel.
+async function menuSelect(items, opts = {}) {
+  const selectedIndex = await promptMenu(items, {
+    cancelable: true,
+    style: term.white,
+    selectedStyle: term.bold.brightCyan,
+    ...opts,
   });
+  term("\n");
+  return selectedIndex;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -450,32 +434,18 @@ async function runChatSession(session, config, defaultSystemPrompt, telemetry) {
     .filter((m) => m.role === "user")
     .map((m) => m.content);
 
-  term.grabInput({ mouse: "button" });
-  const cleanupInput = () => {
-    term.grabInput(false);
-    term.removeListener("key", onKey);
-  };
-  const onKey = (name) => {
-    if (name === "CTRL_C") {
-      cleanupInput();
-      term("\nBye.\n");
-      term.processExit(0);
-    }
-  };
-  term.on("key", onKey);
+  // Ctrl+C is handled globally (see src/interrupt.js): it aborts the in-flight
+  // request, restores the terminal, and exits — from anywhere in this loop.
+  // Each prompt releases its own grab, so leaving the session only has to make
+  // sure nothing was left grabbed by a prompt that ended abnormally.
+  const cleanupInput = () => releaseTerminalInput();
 
   while (true) {
     let wasMultiline = false;
     term.bold.brightBlue("You ▶ ");
-    let input = await new Promise((resolve) => {
-      term.inputField(
-        { cancelable: true, history: [...inputHistory] },
-        (error, val) => {
-          term("\n");
-          resolve(error || val === undefined || val === null ? "" : val.trim());
-        }
-      );
-    });
+    const raw = await promptInput({ cancelable: true, history: [...inputHistory] });
+    term("\n");
+    let input = raw === undefined || raw === null ? "" : raw.trim();
 
     // Multi-line input: a line starting with """ collects lines verbatim
     // until a closing """ on its own line. A line that already contains its
@@ -487,12 +457,9 @@ async function runChatSession(session, config, defaultSystemPrompt, telemetry) {
       term.dim('  Multi-line input — finish with """ on its own line.\n');
       while (true) {
         term.dim("... ");
-        const line = await new Promise((resolve) => {
-          term.inputField({ cancelable: true }, (error, val) => {
-            term("\n");
-            resolve(error || val === undefined || val === null ? '"""' : val);
-          });
-        });
+        const val = await promptInput({ cancelable: true });
+        term("\n");
+        const line = val === undefined || val === null ? '"""' : val;
         if (line.trim() === '"""') break;
         collected.push(line);
       }

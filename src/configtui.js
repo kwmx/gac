@@ -1,6 +1,7 @@
 import terminalKit from "terminal-kit";
 import { setConfigValue } from "./config.js";
 import { CONSENT_STATEMENT } from "./telemetry/consent.js";
+import { promptInput, promptMenu } from "./tui.js";
 
 const { terminal: term } = terminalKit;
 
@@ -60,34 +61,22 @@ export function resolveApiKeyEdit(input, currentValue) {
 }
 
 // A yes/No prompt (default No) for use inside the config editor.
-function promptYesNo(question) {
-  return new Promise((resolve) => {
-    term(question);
-    term.inputField({ cancelable: true }, (error, input) => {
-      term("\n");
-      const value = String(input || "").trim().toLowerCase();
-      resolve(value === "y" || value === "yes");
-    });
-  });
+async function promptYesNo(question) {
+  term(question);
+  const input = await promptInput({ cancelable: true });
+  term("\n");
+  const value = String(input || "").trim().toLowerCase();
+  return value === "y" || value === "yes";
 }
 
 async function promptFieldValue(field, currentValue) {
   // Secret fields show only their prompt — the current value is never rendered.
   const suffix = field.mask ? "" : ` [${formatConfigValue(currentValue)}]`;
   term(`${field.prompt}${suffix}: `);
-  return new Promise((resolve) => {
-    term.inputField(
-      buildFieldInputOptions(field, currentValue),
-      (error, input) => {
-        term("\n");
-        if (error || input === undefined || input === null) {
-          resolve(null);
-          return;
-        }
-        resolve(input.trim());
-      }
-    );
-  });
+  const input = await promptInput(buildFieldInputOptions(field, currentValue));
+  term("\n");
+  if (input === undefined || input === null) return null;
+  return input.trim();
 }
 
 const PROVIDERS = [
@@ -108,20 +97,13 @@ async function selectConfigProvider(config) {
     0
   );
   term("\nSelect provider:\n");
-  return new Promise((resolve) => {
-    term.singleColumnMenu(
-      options,
-      { cancelable: true, selectedIndex: currentIndex },
-      (error, response) => {
-        term("\n");
-        if (error || !response || response.canceled) {
-          resolve(null);
-          return;
-        }
-        resolve(PROVIDERS[response.selectedIndex].value);
-      }
-    );
+  const selectedIndex = await promptMenu(options, {
+    cancelable: true,
+    selectedIndex: currentIndex,
   });
+  term("\n");
+  if (selectedIndex === null) return null;
+  return PROVIDERS[selectedIndex].value;
 }
 
 const FIELDS = [
@@ -191,20 +173,12 @@ export async function runConfigTui(config, deps = {}) {
   const hasTelemetry = Boolean(telemetry);
   term("Config editor (Esc to exit)\n\n");
   const updatedConfig = { ...config };
-  term.grabInput({ mouse: "button" });
+  // Ctrl+C is handled globally (see src/interrupt.js); this only has to undo
+  // the editor's own terminal state when the user leaves normally.
   const cleanup = () => {
     term.grabInput(false);
-    term.removeListener("key", onKey);
     term.hideCursor(false);
   };
-  const onKey = (name) => {
-    if (name === "CTRL_C") {
-      cleanup();
-      term("\nCanceled.\n");
-      term.processExit(0);
-    }
-  };
-  term.on("key", onKey);
 
   const fieldLabel = (field) => {
     if (field.kind === "provider") {
@@ -249,16 +223,9 @@ export async function runConfigTui(config, deps = {}) {
       ...(hasTelemetry ? [telemetryMenuLabel(telemetry.getStatus())] : []),
       "Save and exit",
     ];
-    return new Promise((resolve) => {
-      term.singleColumnMenu(menuItems, { cancelable: true }, (error, response) => {
-        term("\n");
-        if (error || !response || response.canceled) {
-          resolve(false);
-          return;
-        }
-        resolve(response.selectedIndex);
-      });
-    });
+    const selectedIndex = await promptMenu(menuItems, { cancelable: true });
+    term("\n");
+    return selectedIndex === null ? false : selectedIndex;
   };
 
   while (true) {

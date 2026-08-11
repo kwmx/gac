@@ -6,6 +6,7 @@ import {
   buildOpenAiHeaders,
 } from "./gpt4all.js";
 import { getConfigPath } from "./config.js";
+import { registerAbort } from "./interrupt.js";
 
 // Used when the backend does not report a context length and the user has not
 // configured one. Most current local models handle at least 8k tokens.
@@ -166,10 +167,14 @@ function writeDiskCacheEntry(key, value) {
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DETECT_TIMEOUT_MS);
+  // Registered so Ctrl+C cancels the probe instead of making the user wait out
+  // the detection timeout before the command dies.
+  const unregister = registerAbort(controller);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeoutId);
+    unregister();
   }
 }
 

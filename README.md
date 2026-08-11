@@ -156,6 +156,19 @@ gac completions fish > ~/.config/fish/completions/gac.fish
 
 Completes commands, flags, `config get/set/tui`, and file paths for `-f`/`--export`.
 
+### Interrupting gac
+
+Ctrl+C always stops gac, from anywhere: a prompt, a menu, a streaming reply, a
+request that is still waiting on the server, or a runbook step that is midway
+through a command. It aborts the in-flight request, kills every process gac
+started (including anything a runbook's shell launched), restores the terminal,
+and exits with status `130`. No further steps or commands are run, and nothing
+is queued or sent afterwards. Press it twice to skip the cleanup and exit
+immediately. `SIGTERM` and `SIGHUP` are handled the same way.
+
+Inside prompts and menus, `q` and `Esc` still do the local thing — cancel this
+step, quit the runbook, close the editor — and leave gac running.
+
 ## OpenAI Codex (ChatGPT plan)
 
 gac can talk to OpenAI's Codex backend using the same ChatGPT OAuth sign-in the official Codex CLI uses, so usage is billed to your ChatGPT plan (Plus/Pro/Team) instead of an API key:

@@ -4,11 +4,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import process from "process";
-import { promisify } from "util";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { fenceFor, truncateForContext } from "./input.js";
-import { promptKeyAction } from "./tui.js";
+import { promptKeyAction, promptInput } from "./tui.js";
+import { registerChild } from "./interrupt.js";
 import {
   resolveContextWindow,
   resolveMaxTokens,
@@ -17,7 +17,6 @@ import {
 import { sizeBucket, countBucket } from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
-const execFileAsync = promisify(execFile);
 
 // Coarse count of staged files from `git diff --staged --stat` (the last line is
 // the "N files changed" summary). Used only for a count bucket — never a name.
@@ -69,12 +68,23 @@ export function cleanCommitMessage(raw) {
   return text.trim();
 }
 
-async function git(args, options = {}) {
-  const { stdout } = await execFileAsync("git", args, {
-    maxBuffer: 32 * 1024 * 1024,
-    ...options,
+function git(args, options = {}) {
+  // The child is registered so Ctrl+C kills git too — most of these return
+  // instantly, but `git commit` can sit inside a slow pre-commit hook.
+  return new Promise((resolve, reject) => {
+    let unregister = () => {};
+    const child = execFile(
+      "git",
+      args,
+      { maxBuffer: 32 * 1024 * 1024, ...options },
+      (error, stdout) => {
+        unregister();
+        if (error) reject(error);
+        else resolve(stdout);
+      }
+    );
+    unregister = registerChild(child);
   });
-  return stdout;
 }
 
 function buildCommitUserPrompt({ stat, diff, recentLog }, maxDiffChars) {
@@ -151,25 +161,18 @@ function promptCommitAction() {
       q: "quit",
       Q: "quit",
       ESCAPE: "quit",
-      CTRL_C: "quit",
     }
   );
 }
 
 // Read a one-line steering instruction from the user. Returns the trimmed text,
 // or "" if they entered nothing or canceled (Esc).
-function promptGuidanceInput() {
+async function promptGuidanceInput() {
   term.dim('Guidance (e.g. "elaborate on new features") — Enter to skip: ');
-  return new Promise((resolve) => {
-    term.inputField({ cancelable: true }, (error, input) => {
-      term("\n");
-      if (error || input === undefined || input === null) {
-        resolve("");
-        return;
-      }
-      resolve(String(input).trim());
-    });
-  });
+  const input = await promptInput({ cancelable: true });
+  term("\n");
+  if (input === undefined || input === null) return "";
+  return String(input).trim();
 }
 
 function editInEditor(message) {

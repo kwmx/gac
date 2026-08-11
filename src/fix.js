@@ -19,7 +19,8 @@ import {
   loadBlockedCommands,
   findBlockedCommand,
 } from "./runbook.js";
-import { promptKeyAction, copyToClipboard } from "./tui.js";
+import { promptKeyAction, copyToClipboard, promptInput } from "./tui.js";
+import { registerChild } from "./interrupt.js";
 import { exitCodeClass } from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
@@ -135,11 +136,19 @@ function runFixedCommand(command) {
   // (prompts, pagers) work; the shell resolves pipes/globs like a terminal.
   return new Promise((resolve) => {
     const child = spawn(command, { shell: true, stdio: "inherit" });
+    // The child shares our terminal, so the tty already sends it SIGINT on
+    // Ctrl+C — registering it means an interrupt that arrives any other way
+    // (SIGTERM, a raw ^C read while a prompt held the terminal) kills it too.
+    const unregister = registerChild(child);
     child.on("error", (err) => {
+      unregister();
       term.red(`Failed to start command: ${err.message}\n`);
       resolve(1);
     });
-    child.on("close", (code) => resolve(code ?? 1));
+    child.on("close", (code) => {
+      unregister();
+      resolve(code ?? 1);
+    });
   });
 }
 
@@ -152,7 +161,6 @@ function promptFixAction(isBlocked) {
     q: "quit",
     Q: "quit",
     ESCAPE: "quit",
-    CTRL_C: "quit",
   };
   if (isBlocked) {
     return promptKeyAction("[e] edit  [c] copy  [q] quit: ", keys);
@@ -165,16 +173,10 @@ function promptFixAction(isBlocked) {
 
 async function editFixedCommand(current) {
   term("Edit command:\n> ");
-  return new Promise((resolve) => {
-    term.inputField({ cancelable: true, default: String(current) }, (error, input) => {
-      term("\n");
-      if (error || input === undefined || input === null || !input.trim()) {
-        resolve(current);
-        return;
-      }
-      resolve(input.trim());
-    });
-  });
+  const input = await promptInput({ cancelable: true, default: String(current) });
+  term("\n");
+  if (input === undefined || input === null || !input.trim()) return current;
+  return input.trim();
 }
 
 export async function runFix(promptArgs, config, opts = {}) {
