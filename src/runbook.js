@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { buildRunbookContext } from "./sysinfo.js";
-import { promptKeyAction } from "./tui.js";
+import { promptInputLine, promptKeyAction } from "./tui.js";
 import { attachInputToPrompt, formatFileContexts, truncateForContext } from "./input.js";
 import {
   resolveContextWindow,
@@ -449,17 +449,8 @@ async function requestCommandFix(entry, result, config, telemetry) {
 }
 
 async function editCommand(current) {
-  term("Edit command:\n> ");
-  return new Promise((resolve) => {
-    term.inputField({ cancelable: true, default: String(current) }, (error, input) => {
-      term("\n");
-      if (error || input === undefined || input === null || !input.trim()) {
-        resolve(current);
-        return;
-      }
-      resolve(input.trim());
-    });
-  });
+  const input = await promptInputLine("Edit command:\n> ", { default: String(current) });
+  return input ? input : current;
 }
 
 async function requestRunbookPlan(prompt, config, opts) {

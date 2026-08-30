@@ -60,6 +60,10 @@ async function runEnable(args, telemetry, deps) {
 
   if (!yes) {
     const ok = await confirm("Enable telemetry? [y/N] ");
+    if (ok === null) {
+      write("Canceled.\n");
+      return 130;
+    }
     if (!ok) {
       write("Telemetry not enabled.\n");
       return 0;

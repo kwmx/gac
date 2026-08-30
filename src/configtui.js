@@ -1,6 +1,12 @@
 import terminalKit from "terminal-kit";
 import { setConfigValue } from "./config.js";
 import { CONSENT_STATEMENT } from "./telemetry/consent.js";
+import {
+  forceExitFromCtrlC,
+  promptInputLine,
+  promptYesNo,
+  withCancelableKeyBindings,
+} from "./tui.js";
 
 const { terminal: term } = terminalKit;
 
@@ -43,9 +49,9 @@ export function maskApiKey(apiKey) {
 // default. Kept pure and exported so the no-raw-key-default rule is testable.
 export function buildFieldInputOptions(field, currentValue) {
   if (field && field.mask) {
-    return { cancelable: true, echoChar: "•" };
+    return withCancelableKeyBindings({ echoChar: "•" });
   }
-  return { cancelable: true, default: String(currentValue ?? "") };
+  return withCancelableKeyBindings({ default: String(currentValue ?? "") });
 }
 
 // Decide what an API-key edit means. Empty input keeps the existing key;
@@ -59,34 +65,11 @@ export function resolveApiKeyEdit(input, currentValue) {
   return { action: "set", value: trimmed };
 }
 
-// A yes/No prompt (default No) for use inside the config editor.
-function promptYesNo(question) {
-  return new Promise((resolve) => {
-    term(question);
-    term.inputField({ cancelable: true }, (error, input) => {
-      term("\n");
-      const value = String(input || "").trim().toLowerCase();
-      resolve(value === "y" || value === "yes");
-    });
-  });
-}
-
 async function promptFieldValue(field, currentValue) {
   // Secret fields show only their prompt — the current value is never rendered.
   const suffix = field.mask ? "" : ` [${formatConfigValue(currentValue)}]`;
-  term(`${field.prompt}${suffix}: `);
-  return new Promise((resolve) => {
-    term.inputField(
-      buildFieldInputOptions(field, currentValue),
-      (error, input) => {
-        term("\n");
-        if (error || input === undefined || input === null) {
-          resolve(null);
-          return;
-        }
-        resolve(input.trim());
-      }
-    );
+  return promptInputLine(`${field.prompt}${suffix}: `, buildFieldInputOptions(field, currentValue), {
+    cancelValue: null,
   });
 }
 
@@ -200,8 +183,7 @@ export async function runConfigTui(config, deps = {}) {
   const onKey = (name) => {
     if (name === "CTRL_C") {
       cleanup();
-      term("\nCanceled.\n");
-      term.processExit(0);
+      forceExitFromCtrlC();
     }
   };
   term.on("key", onKey);
@@ -232,6 +214,10 @@ export async function runConfigTui(config, deps = {}) {
     }
     term(`\n${CONSENT_STATEMENT}\n\n`);
     const ok = await promptYesNo("Enable telemetry? [y/N] ");
+    if (ok === null) {
+      term("Canceled.\n");
+      return;
+    }
     if (!ok) {
       term("Telemetry not enabled.\n");
       return;

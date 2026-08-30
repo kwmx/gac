@@ -15,12 +15,14 @@ test("buildFieldInputOptions never seeds the raw key as a visible default", () =
   // The current key must not become an editable default in the input field.
   assert.ok(!("default" in options), "secret field must not carry a default value");
   assert.equal(options.echoChar, "•", "secret input must be masked while typing");
+  assert.equal(options.keyBindings.CTRL_C, "cancel");
   assert.ok(!JSON.stringify(options).includes(SENTINEL));
 });
 
 test("buildFieldInputOptions keeps the current value editable for normal fields", () => {
   const options = buildFieldInputOptions({ key: "model" }, "gpt4all");
   assert.equal(options.default, "gpt4all");
+  assert.equal(options.keyBindings.CTRL_C, "cancel");
   assert.equal(options.echoChar, undefined);
 });
 

@@ -45,6 +45,7 @@ import { CONSENT_STATEMENT } from "./telemetry/consent.js";
 import { spawnBackgroundFlush } from "./telemetry/background.js";
 import { runTelemetryCommand } from "./telemetrycli.js";
 import { sizeBucket, countBucket, inputMode } from "./telemetry/buckets.js";
+import { forceExitFromCtrlC, promptYesNo } from "./tui.js";
 
 const { terminal: term } = terminalKit;
 
@@ -186,8 +187,7 @@ async function runModels(config, interactive) {
   const onKey = (name) => {
     if (name === "CTRL_C") {
       cleanup();
-      term("\nCanceled.\n");
-      term.processExit(0);
+      forceExitFromCtrlC();
     }
   };
   term.on("key", onKey);
@@ -334,29 +334,23 @@ async function runConfigCommand(args, config, interactive, telemetry) {
   return { outcome: "success", props: { subcommand: "view" } };
 }
 
-// A yes/No prompt (default No). Only used interactively.
-function readYesNo(question) {
-  return new Promise((resolve) => {
-    term(question);
-    term.inputField({ cancelable: true }, (error, input) => {
-      term("\n");
-      const value = String(input || "").trim().toLowerCase();
-      resolve(value === "y" || value === "yes");
-    });
-  });
-}
-
 // The one-time automatic consent notice, shown before the first interactive
 // telemetry-eligible action. Declining is recorded so it is not repeated.
 async function runAutoConsentPrompt(telemetry) {
   term(`${CONSENT_STATEMENT}\n\n`);
-  const yes = await readYesNo("Enable telemetry? [y/N] ");
+  const yes = await promptYesNo("Enable telemetry? [y/N] ");
+  if (yes === null) {
+    term("Canceled.\n");
+    process.exitCode = 130;
+    return false;
+  }
   if (yes) {
     await telemetry.enable({ action: "first_run_prompt" });
   } else {
     telemetry.decline();
   }
   term("\n");
+  return true;
 }
 
 // Best-effort mapping of the raw command token to a command_completed action.
@@ -484,7 +478,7 @@ export async function runCli(argv, cliDeps = {}) {
     const telemetry = makeTelemetry(config);
     const code = await runTelemetryCommand(rest, telemetry, {
       write: (s) => term(s),
-      confirm: (question) => readYesNo(question),
+      confirm: (question) => promptYesNo(question),
       interactive,
     });
     if (code) process.exitCode = code;
@@ -500,7 +494,8 @@ export async function runCli(argv, cliDeps = {}) {
     PROMPT_ELIGIBLE_ACTIONS.has(plannedAction) &&
     telemetry.shouldPrompt(interactive)
   ) {
-    await runAutoConsentPrompt(telemetry);
+    const shouldContinue = await runAutoConsentPrompt(telemetry);
+    if (!shouldContinue) return;
   }
 
   const commandStart = Date.now();

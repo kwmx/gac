@@ -8,7 +8,7 @@ import { promisify } from "util";
 import { chatCompletion } from "./gpt4all.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { fenceFor, truncateForContext } from "./input.js";
-import { promptKeyAction } from "./tui.js";
+import { promptInputLine, promptKeyAction } from "./tui.js";
 import {
   resolveContextWindow,
   resolveMaxTokens,
@@ -159,17 +159,11 @@ function promptCommitAction() {
 // Read a one-line steering instruction from the user. Returns the trimmed text,
 // or "" if they entered nothing or canceled (Esc).
 function promptGuidanceInput() {
-  term.dim('Guidance (e.g. "elaborate on new features") — Enter to skip: ');
-  return new Promise((resolve) => {
-    term.inputField({ cancelable: true }, (error, input) => {
-      term("\n");
-      if (error || input === undefined || input === null) {
-        resolve("");
-        return;
-      }
-      resolve(String(input).trim());
-    });
-  });
+  return promptInputLine(
+    'Guidance (e.g. "elaborate on new features") — Enter to skip: ',
+    {},
+    { cancelValue: "" }
+  );
 }
 
 function editInEditor(message) {

@@ -124,6 +124,18 @@ test("interactive enable defaults to No and does not enable on decline", async (
   assert.ok(h.out.join("").includes("Telemetry not enabled."));
 });
 
+test("interactive enable cancellation exits without saving a decision", async () => {
+  const h = harness();
+  const code = await runTelemetryCommand(["enable"], h.tel, {
+    ...h.deps,
+    confirm: async () => null,
+    interactive: true,
+  });
+  assert.equal(code, 130);
+  assert.equal(h.tel.getEffectiveDecision(), "undecided");
+  assert.ok(h.out.join("").includes("Canceled."));
+});
+
 test("interactive enable enables on an affirmative confirmation", async () => {
   const h = harness();
   const code = await runTelemetryCommand(["enable"], h.tel, {

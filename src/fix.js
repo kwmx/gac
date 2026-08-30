@@ -19,7 +19,7 @@ import {
   loadBlockedCommands,
   findBlockedCommand,
 } from "./runbook.js";
-import { promptKeyAction, copyToClipboard } from "./tui.js";
+import { copyToClipboard, promptInputLine, promptKeyAction } from "./tui.js";
 import { exitCodeClass } from "./telemetry/buckets.js";
 
 const { terminal: term } = terminalKit;
@@ -164,17 +164,8 @@ function promptFixAction(isBlocked) {
 }
 
 async function editFixedCommand(current) {
-  term("Edit command:\n> ");
-  return new Promise((resolve) => {
-    term.inputField({ cancelable: true, default: String(current) }, (error, input) => {
-      term("\n");
-      if (error || input === undefined || input === null || !input.trim()) {
-        resolve(current);
-        return;
-      }
-      resolve(input.trim());
-    });
-  });
+  const input = await promptInputLine("Edit command:\n> ", { default: String(current) });
+  return input ? input : current;
 }
 
 export async function runFix(promptArgs, config, opts = {}) {
