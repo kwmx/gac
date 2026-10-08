@@ -4,11 +4,36 @@ import process from "process";
 const { terminal: term } = terminalKit;
 let ctrlCExitInProgress = false;
 
+// terminal-kit replaces (rather than merges) inputField's default bindings
+// when keyBindings is supplied. Keep its normal submit/edit/history behavior
+// when adding cancellation, including for config fields and line prompts.
+const INPUT_FIELD_KEY_BINDINGS = {
+  ENTER: "submit",
+  KP_ENTER: "submit",
+  BACKSPACE: "backDelete",
+  DELETE: "delete",
+  LEFT: "backward",
+  RIGHT: "forward",
+  UP: "historyPrevious",
+  DOWN: "historyNext",
+  HOME: "startOfInput",
+  END: "endOfInput",
+  TAB: "autoComplete",
+  CTRL_R: "autoCompleteUsingHistory",
+  CTRL_LEFT: "previousWord",
+  CTRL_RIGHT: "nextWord",
+  ALT_D: "deleteNextWord",
+  CTRL_W: "deletePreviousWord",
+  CTRL_U: "deleteAllBefore",
+  CTRL_K: "deleteAllAfter",
+};
+
 export function withCancelableKeyBindings(options = {}) {
   return {
     ...options,
     cancelable: true,
     keyBindings: {
+      ...INPUT_FIELD_KEY_BINDINGS,
       ...(options.keyBindings || {}),
       ESCAPE: "cancel",
       CTRL_C: "cancel",
