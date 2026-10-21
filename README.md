@@ -4,7 +4,7 @@ Terminal client for OpenAI-compatible APIs (including GPT4All), Ollama, and Open
 
 ## Installation
 
-Requirements: Node.js 18+ and a running OpenAI-compatible server (like GPT4All) or Ollama.
+Requirements: Node.js 22.23.4+, 24.22.1+, or 26.12.1+ (the October 21, 2026 security releases) and a running OpenAI-compatible server (like GPT4All) or Ollama.
 
 ```bash
 npm install -g @alhisan/gac
